@@ -57,7 +57,7 @@
   <div class="briefing-text" id="briefing-text">Loading briefing...</div>
 </div>
 <div class="toolbar">
-  <input type="text" id="search" placeholder="Search company name..." oninput="filterTable()">
+  <input type="text" id="search" placeholder="Search company name or number..." oninput="filterTable()">
   <button class="btn btn-primary" onclick="refresh()">Refresh</button>
   <a class="btn btn-success" href="/export/excel">Export Excel</a>
   <a class="btn btn-info" href="/export/csv">Export CSV</a>
@@ -69,7 +69,7 @@
 </div>
 <div id="notices" class="panel active">
   <table id="table">
-    <thead><tr><th>Company</th><th>Type</th><th>Date Fetched</th><th>Notice</th></tr></thead>
+    <thead><tr><th>Company</th><th>Company Number</th><th>Type</th><th>Date</th><th>Gazette</th><th>Companies House</th></tr></thead>
     <tbody id="tbody"></tbody>
   </table>
 </div>
@@ -107,22 +107,28 @@ function loadBriefing() {
 
 function renderTable(data) {
   const tbody = document.getElementById('tbody');
-  tbody.innerHTML = data.map(r => `
-    <tr>
+  tbody.innerHTML = data.map(r => {
+    const chUrl = r.company_number ? `https://find-and-update.company-information.service.gov.uk/company/${r.company_number}` : '';
+    const chLink = chUrl ? `<a href="${chUrl}" target="_blank">${r.company_number}</a>` : '';
+    const chBtn = chUrl ? `<a href="${chUrl}" target="_blank">View</a>` : '';
+    return `<tr>
       <td>${r.company}</td>
+      <td>${chLink}</td>
       <td><span class="badge ${badgeClass(r.type)}">${r.type}</span></td>
       <td>${r.date}</td>
-      <td><a href="${r.url}" target="_blank">View notice</a></td>
-    </tr>`).join('');
+      <td><a href="${r.url}" target="_blank">View</a></td>
+      <td>${chBtn}</td>
+    </tr>`;
+  }).join('');
 }
 
 function filterTable() {
   const s = document.getElementById('search').value.toLowerCase();
-  renderTable(allData.filter(r => r.company.toLowerCase().includes(s)));
+  renderTable(allData.filter(r => r.company.toLowerCase().includes(s) || (r.company_number && r.company_number.includes(s))));
 }
 
 function refresh() {
-  document.getElementById('status').textContent = 'Fetching...';
+  document.getElementById('status').textContent = 'Fetching... this may take a minute';
   fetch('/api/refresh').then(r => r.json()).then(d => {
     document.getElementById('status').textContent = d.status === 'ok' ? d.new + ' new notices found.' : 'Error: ' + d.message;
     loadNotices();
