@@ -1,7 +1,8 @@
 from flask import Flask, render_template, jsonify, send_file
-import sqlite3, requests, csv, io, openpyxl
+import sqlite3, requests, csv, io, os, openpyxl
 from datetime import datetime
 from collections import Counter
+import anthropic
 
 app = Flask(__name__)
 BASE_URL = "https://www.thegazette.co.uk"
@@ -66,6 +67,41 @@ def chart():
     rows = conn.execute("SELECT notice_code FROM insolvencies").fetchall()
     conn.close()
     return jsonify(Counter(CODES.get(r[0], r[0]) for r in rows))
+
+@app.route("/api/briefing")
+def briefing():
+    try:
+        conn = get_db()
+        rows = conn.execute("SELECT company_name, notice_code, date_fetched FROM insolvencies ORDER BY date_fetched DESC").fetchall()
+        conn.close()
+
+        total = len(rows)
+        type_counts = Counter(CODES.get(r[1], r[1]) for r in rows)
+        recent = rows[:10]
+        recent_names = [r[0] for r in recent]
+        today = datetime.now().strftime("%A %d %B %Y")
+
+        summary = f"""Today is {today}.
+Total insolvencies on record: {total}
+Breakdown by type: {dict(type_counts)}
+Most recent 10 companies: {', '.join(recent_names)}"""
+
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=300,
+            messages=[
+                {"role": "user", "content": f"""You are a credit analyst assistant. Based on this insolvency data, write a concise morning briefing (3-4 sentences) for a credit analyst. Be professional and highlight key trends or notable companies.
+
+Data:
+{summary}
+
+Write the briefing now:"""}
+            ]
+        )
+        return jsonify({"briefing": message.content[0].text})
+    except Exception as e:
+        return jsonify({"briefing": f"Briefing unavailable: {str(e)}"})
 
 @app.route("/export/csv")
 def export_csv():
