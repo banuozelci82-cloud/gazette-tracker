@@ -1,6 +1,6 @@
 from flask import Flask, render_template, jsonify, send_file
 import sqlite3, requests, csv, io, os, openpyxl
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import Counter
 import anthropic
 
@@ -25,7 +25,7 @@ DB = "gazette.db"
 
 def get_db():
     conn = sqlite3.connect(DB)
-    conn.execute("CREATE TABLE IF NOT EXISTS insolvencies (id TEXT PRIMARY KEY, company_name TEXT, notice_code TEXT, url TEXT, date_fetched TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS insolvencies (id TEXT PRIMARY KEY, company_name TEXT, notice_code TEXT, url TEXT, date_fetched TEXT, notice_date TEXT)")
     conn.commit()
     return conn
 
@@ -36,28 +36,66 @@ def index():
 @app.route("/api/notices")
 def notices():
     conn = get_db()
-    rows = conn.execute("SELECT company_name, notice_code, date_fetched, url FROM insolvencies ORDER BY date_fetched DESC").fetchall()
+    try:
+        rows = conn.execute("SELECT company_name, notice_code, date_fetched, url, notice_date FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC").fetchall()
+    except:
+        rows = conn.execute("SELECT company_name, notice_code, date_fetched, url FROM insolvencies ORDER BY date_fetched DESC").fetchall()
+        rows = [(r[0], r[1], r[2], r[3], "") for r in rows]
     conn.close()
-    return jsonify([{"company": r[0], "type": CODES.get(r[1], r[1]), "date": r[2], "url": r[3]} for r in rows])
+    return jsonify([{"company": r[0], "type": CODES.get(r[1], r[1]), "date": r[4] or r[2], "url": r[3]} for r in rows])
 
 @app.route("/api/refresh")
 def refresh():
     try:
-        r = requests.get(f"{BASE_URL}/all-notices/notice", params={"category-code": "400", "results-page-size": "50"}, headers=HEADERS, timeout=10)
-        entries = r.json().get("entry", [])
-        corporate = [n for n in entries if n.get("f:notice-code") in CODES]
-        conn = get_db()
+        cutoff = datetime.now() - timedelta(days=7)
         new = 0
-        for n in corporate:
-            nid = n.get("id", "").split("/")[-1]
-            try:
-                conn.execute("INSERT INTO insolvencies VALUES (?,?,?,?,?)", (nid, n.get("title", "N/A"), n.get("f:notice-code", ""), f"https://www.thegazette.co.uk/notice/{nid}", datetime.now().strftime("%Y-%m-%d %H:%M")))
-                new += 1
-            except:
-                pass
-        conn.commit()
+        page = 1
+        stop = False
+        conn = get_db()
+
+        while not stop and page <= 50:
+            r = requests.get(
+                f"{BASE_URL}/all-notices/notice",
+                params={"category-code": "400", "results-page-size": "50", "results-page": str(page)},
+                headers=HEADERS,
+                timeout=10
+            )
+            entries = r.json().get("entry", [])
+            if not entries:
+                break
+
+            for n in entries:
+                notice_date_str = n.get("f:publish-date", "") or n.get("updated", "")
+                notice_date = None
+                if notice_date_str:
+                    try:
+                        notice_date = datetime.fromisoformat(notice_date_str[:10])
+                    except:
+                        notice_date = None
+
+                if notice_date and notice_date < cutoff:
+                    stop = True
+                    break
+
+                if n.get("f:notice-code") in CODES:
+                    nid = n.get("id", "").split("/")[-1]
+                    try:
+                        conn.execute(
+                            "INSERT INTO insolvencies VALUES (?,?,?,?,?,?)",
+                            (nid, n.get("title", "N/A"), n.get("f:notice-code", ""),
+                             f"https://www.thegazette.co.uk/notice/{nid}",
+                             datetime.now().strftime("%Y-%m-%d %H:%M"),
+                             notice_date_str[:10] if notice_date_str else "")
+                        )
+                        new += 1
+                    except:
+                        pass
+
+            conn.commit()
+            page += 1
+
         conn.close()
-        return jsonify({"status": "ok", "new": new})
+        return jsonify({"status": "ok", "new": new, "pages": page - 1})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)})
 
@@ -74,30 +112,24 @@ def briefing():
         conn = get_db()
         rows = conn.execute("SELECT company_name, notice_code, date_fetched FROM insolvencies ORDER BY date_fetched DESC").fetchall()
         conn.close()
-
         total = len(rows)
         type_counts = Counter(CODES.get(r[1], r[1]) for r in rows)
-        recent = rows[:10]
-        recent_names = [r[0] for r in recent]
+        recent_names = [r[0] for r in rows[:10]]
         today = datetime.now().strftime("%A %d %B %Y")
-
         summary = f"""Today is {today}.
 Total insolvencies on record: {total}
 Breakdown by type: {dict(type_counts)}
 Most recent 10 companies: {', '.join(recent_names)}"""
-
         client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=300,
-            messages=[
-                {"role": "user", "content": f"""You are a credit analyst assistant. Based on this insolvency data, write a concise morning briefing (3-4 sentences) for a credit analyst. Be professional and highlight key trends or notable companies.
+            messages=[{"role": "user", "content": f"""You are a credit analyst assistant. Based on this insolvency data, write a concise morning briefing (3-4 sentences) for a credit analyst. Be professional and highlight key trends or notable companies.
 
 Data:
 {summary}
 
-Write the briefing now:"""}
-            ]
+Write the briefing now:"""}]
         )
         return jsonify({"briefing": message.content[0].text})
     except Exception as e:
