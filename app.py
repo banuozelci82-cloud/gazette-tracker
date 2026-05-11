@@ -1,5 +1,5 @@
 from flask import Flask, render_template, jsonify, send_file
-import sqlite3, requests, csv, io, os, openpyxl, time
+import sqlite3, requests, csv, io, os, openpyxl
 from datetime import datetime, timedelta
 from collections import Counter
 from bs4 import BeautifulSoup
@@ -24,6 +24,9 @@ CODES = {
 HEADERS = {"Accept": "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 DB = "gazette.db"
 
+def clean_name(name):
+    return name.replace("&apos;", "'").replace("&amp;", "&").replace("&quot;", '"').replace("&#39;", "'")
+
 def get_db():
     conn = sqlite3.connect(DB)
     conn.execute("""CREATE TABLE IF NOT EXISTS insolvencies (
@@ -36,17 +39,6 @@ def get_db():
             pass
     conn.commit()
     return conn
-
-def get_company_number(notice_id):
-    try:
-        r = requests.get(f"{BASE_URL}/notice/{notice_id}", headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
-        for line in [l.strip() for l in soup.get_text().split("\n") if l.strip()]:
-            if line.startswith("Company Number:"):
-                return line.replace("Company Number:", "").strip()
-    except:
-        pass
-    return ""
 
 @app.route("/")
 def index():
@@ -85,13 +77,12 @@ def refresh():
                     break
                 if n.get("f:notice-code") in CODES:
                     nid = n.get("id", "").split("/")[-1]
-                    cn = get_company_number(nid)
-                    time.sleep(0.5)
+                    company_name = clean_name(n.get("title", "N/A"))
                     try:
                         conn.execute("INSERT INTO insolvencies VALUES (?,?,?,?,?,?,?)",
-                            (nid, n.get("title", "N/A"), n.get("f:notice-code", ""),
+                            (nid, company_name, n.get("f:notice-code", ""),
                              f"{BASE_URL}/notice/{nid}", datetime.now().strftime("%Y-%m-%d %H:%M"),
-                             nd_str[:10] if nd_str else "", cn))
+                             nd_str[:10] if nd_str else "", ""))
                         new += 1
                     except:
                         pass
