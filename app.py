@@ -3,7 +3,6 @@ import sqlite3, requests, csv, io, os, openpyxl
 from datetime import datetime, timedelta
 from collections import Counter
 from bs4 import BeautifulSoup
-import anthropic
 
 app = Flask(__name__)
 BASE_URL = "https://www.thegazette.co.uk"
@@ -31,12 +30,11 @@ def get_db():
     conn = sqlite3.connect(DB)
     conn.execute("""CREATE TABLE IF NOT EXISTS insolvencies (
         id TEXT PRIMARY KEY, company_name TEXT, notice_code TEXT,
-        url TEXT, date_fetched TEXT, notice_date TEXT, company_number TEXT)""")
-    for col in ["company_number", "notice_date"]:
-        try:
-            conn.execute(f"ALTER TABLE insolvencies ADD COLUMN {col} TEXT")
-        except:
-            pass
+        url TEXT, date_fetched TEXT, notice_date TEXT)""")
+    try:
+        conn.execute("ALTER TABLE insolvencies ADD COLUMN notice_date TEXT")
+    except:
+        pass
     conn.commit()
     return conn
 
@@ -47,9 +45,9 @@ def index():
 @app.route("/api/notices")
 def notices():
     conn = get_db()
-    rows = conn.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, company_number FROM insolvencies ORDER BY date_fetched DESC").fetchall()
+    rows = conn.execute("SELECT company_name, notice_code, date_fetched, url, notice_date FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC").fetchall()
     conn.close()
-    return jsonify([{"company": r[0], "type": CODES.get(r[1], r[1]), "date": r[4] or r[2], "url": r[3], "company_number": r[5] or ""} for r in rows])
+    return jsonify([{"company": r[0], "type": CODES.get(r[1], r[1]), "date": r[4] or r[2], "url": r[3]} for r in rows])
 
 @app.route("/api/refresh")
 def refresh():
@@ -79,10 +77,11 @@ def refresh():
                     nid = n.get("id", "").split("/")[-1]
                     company_name = clean_name(n.get("title", "N/A"))
                     try:
-                        conn.execute("INSERT INTO insolvencies VALUES (?,?,?,?,?,?,?)",
+                        conn.execute("INSERT INTO insolvencies VALUES (?,?,?,?,?,?)",
                             (nid, company_name, n.get("f:notice-code", ""),
-                             f"{BASE_URL}/notice/{nid}", datetime.now().strftime("%Y-%m-%d %H:%M"),
-                             nd_str[:10] if nd_str else "", ""))
+                             f"{BASE_URL}/notice/{nid}",
+                             datetime.now().strftime("%Y-%m-%d %H:%M"),
+                             nd_str[:10] if nd_str else ""))
                         new += 1
                     except:
                         pass
@@ -98,58 +97,4 @@ def chart():
     conn = get_db()
     rows = conn.execute("SELECT notice_code FROM insolvencies").fetchall()
     conn.close()
-    return jsonify(Counter(CODES.get(r[0], r[0]) for r in rows))
-
-@app.route("/api/briefing")
-def briefing():
-    try:
-        conn = get_db()
-        rows = conn.execute("SELECT company_name, notice_code, date_fetched FROM insolvencies ORDER BY date_fetched DESC").fetchall()
-        conn.close()
-        total = len(rows)
-        type_counts = Counter(CODES.get(r[1], r[1]) for r in rows)
-        recent_names = [r[0] for r in rows[:10]]
-        today = datetime.now().strftime("%A %d %B %Y")
-        summary = f"Today is {today}.\nTotal: {total}\nTypes: {dict(type_counts)}\nRecent: {', '.join(recent_names)}"
-        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-        msg = client.messages.create(model="claude-sonnet-4-20250514", max_tokens=300,
-            messages=[{"role": "user", "content": f"You are a credit analyst assistant. Write a concise 3-4 sentence morning briefing based on this insolvency data:\n{summary}"}])
-        return jsonify({"briefing": msg.content[0].text})
-    except Exception as e:
-        return jsonify({"briefing": f"Briefing unavailable: {str(e)}"})
-
-@app.route("/export/csv")
-def export_csv():
-    conn = get_db()
-    rows = conn.execute("SELECT company_name, notice_code, date_fetched, url, company_number FROM insolvencies ORDER BY date_fetched DESC").fetchall()
-    conn.close()
-    output = io.StringIO()
-    w = csv.writer(output)
-    w.writerow(["Company", "Company Number", "Type", "Date Fetched", "Gazette URL", "Companies House URL"])
-    for row in rows:
-        ch = f"https://find-and-update.company-information.service.gov.uk/company/{row[4]}" if row[4] else ""
-        w.writerow([row[0], row[4] or "", CODES.get(row[1], row[1]), row[2], row[3], ch])
-    output.seek(0)
-    return send_file(io.BytesIO(output.getvalue().encode()), mimetype="text/csv", as_attachment=True, download_name="insolvencies.csv")
-
-@app.route("/export/excel")
-def export_excel():
-    conn = get_db()
-    rows = conn.execute("SELECT company_name, notice_code, date_fetched, url, company_number FROM insolvencies ORDER BY date_fetched DESC").fetchall()
-    conn.close()
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Insolvencies"
-    ws.append(["Company", "Company Number", "Type", "Date Fetched", "Gazette URL", "Companies House URL"])
-    for row in rows:
-        ch = f"https://find-and-update.company-information.service.gov.uk/company/{row[4]}" if row[4] else ""
-        ws.append([row[0], row[4] or "", CODES.get(row[1], row[1]), row[2], row[3], ch])
-    for col in ws.columns:
-        ws.column_dimensions[col[0].column_letter].width = 25
-    output = io.BytesIO()
-    wb.save(output)
-    output.seek(0)
-    return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="insolvencies.xlsx")
-
-if __name__ == "__main__":
-    app.run(debug=True)
+    retur
