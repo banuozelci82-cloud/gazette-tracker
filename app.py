@@ -97,4 +97,38 @@ def chart():
     conn = get_db()
     rows = conn.execute("SELECT notice_code FROM insolvencies").fetchall()
     conn.close()
-    retur
+    return jsonify(Counter(CODES.get(r[0], r[0]) for r in rows))
+
+@app.route("/export/csv")
+def export_csv():
+    conn = get_db()
+    rows = conn.execute("SELECT company_name, notice_code, date_fetched, url, notice_date FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC").fetchall()
+    conn.close()
+    output = io.StringIO()
+    w = csv.writer(output)
+    w.writerow(["Company", "Type", "Date", "Gazette URL"])
+    for row in rows:
+        w.writerow([row[0], CODES.get(row[1], row[1]), row[4] or row[2], row[3]])
+    output.seek(0)
+    return send_file(io.BytesIO(output.getvalue().encode()), mimetype="text/csv", as_attachment=True, download_name="insolvencies.csv")
+
+@app.route("/export/excel")
+def export_excel():
+    conn = get_db()
+    rows = conn.execute("SELECT company_name, notice_code, date_fetched, url, notice_date FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC").fetchall()
+    conn.close()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Insolvencies"
+    ws.append(["Company", "Type", "Date", "Gazette URL"])
+    for row in rows:
+        ws.append([row[0], CODES.get(row[1], row[1]), row[4] or row[2], row[3]])
+    for col in ws.columns:
+        ws.column_dimensions[col[0].column_letter].width = 25
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="insolvencies.xlsx")
+
+if __name__ == "__main__":
+    app.run(debug=True)
