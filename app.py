@@ -1,7 +1,9 @@
 from flask import Flask, render_template, jsonify, send_file
-import sqlite3, requests, csv, io, os, openpyxl
+import requests, csv, io, os, openpyxl
 from datetime import datetime, timedelta
 from collections import Counter
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 BASE_URL = "https://www.thegazette.co.uk"
@@ -21,49 +23,25 @@ CODES = {
     "2454": "Winding Up",
 }
 HEADERS = {"Accept": "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-DB = "gazette.db"
 
 def clean_name(name):
     return name.replace("&apos;", "'").replace("&amp;", "&").replace("&quot;", '"').replace("&#39;", "'")
 
 def get_db():
-    conn = sqlite3.connect(DB)
-    conn.execute("""CREATE TABLE IF NOT EXISTS insolvencies (
-        id TEXT PRIMARY KEY, company_name TEXT, notice_code TEXT,
-        url TEXT, date_fetched TEXT, notice_date TEXT,
-        company_number TEXT, sector TEXT)""")
-    for col in ["notice_date", "company_number", "sector"]:
-        try:
-            conn.execute(f"ALTER TABLE insolvencies ADD COLUMN {col} TEXT")
-        except:
-            pass
+    conn = psycopg2.connect(os.environ.get("DATABASE_URL"), sslmode="require")
+    cur = conn.cursor()
+    cur.execute("""CREATE TABLE IF NOT EXISTS insolvencies (
+        id TEXT PRIMARY KEY,
+        company_name TEXT,
+        notice_code TEXT,
+        url TEXT,
+        date_fetched TEXT,
+        notice_date TEXT,
+        company_number TEXT,
+        sector TEXT
+    )""")
     conn.commit()
     return conn
-
-def get_company_info(company_name):
-    try:
-        api_key = os.environ.get("COMPANIES_HOUSE_API_KEY", "")
-        r = requests.get(
-            f"{CH_BASE}/search/companies",
-            params={"q": company_name, "items_per_page": 1},
-            auth=(api_key, ""),
-            timeout=10
-        )
-        items = r.json().get("items", [])
-        if items:
-            company_number = items[0].get("company_number", "")
-            # Get full company details for SIC code
-            detail = requests.get(
-                f"{CH_BASE}/company/{company_number}",
-                auth=(api_key, ""),
-                timeout=10
-            ).json()
-            sic_codes = detail.get("sic_codes", [])
-            sector = get_sector_from_sic(sic_codes[0] if sic_codes else "")
-            return company_number, sector
-    except:
-        pass
-    return "", ""
 
 def get_sector_from_sic(sic):
     if not sic:
@@ -91,6 +69,30 @@ def get_sector_from_sic(sic):
     if code <= 96: return "Other Services"
     return "Other"
 
+def get_company_info(company_name):
+    try:
+        api_key = os.environ.get("COMPANIES_HOUSE_API_KEY", "")
+        r = requests.get(
+            f"{CH_BASE}/search/companies",
+            params={"q": company_name, "items_per_page": 1},
+            auth=(api_key, ""),
+            timeout=10
+        )
+        items = r.json().get("items", [])
+        if items:
+            company_number = items[0].get("company_number", "")
+            detail = requests.get(
+                f"{CH_BASE}/company/{company_number}",
+                auth=(api_key, ""),
+                timeout=10
+            ).json()
+            sic_codes = detail.get("sic_codes", [])
+            sector = get_sector_from_sic(sic_codes[0] if sic_codes else "")
+            return company_number, sector
+    except:
+        pass
+    return "", ""
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -98,9 +100,11 @@ def index():
 @app.route("/api/notices")
 def notices():
     conn = get_db()
-    rows = conn.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, company_number, sector FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC").fetchall()
+    cur = conn.cursor()
+    cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC")
+    rows = cur.fetchall()
     conn.close()
-    return jsonify([{"company": r[0], "type": CODES.get(r[1], r[1]), "date": r[4] or r[2], "url": r[3], "company_number": r[5] or "", "sector": r[6] or ""} for r in rows])
+    return jsonify([{"company": r[0], "type": CODES.get(r[1], r[1]), "date": r[4] or r[2], "url": r[3], "sector": r[5] or ""} for r in rows])
 
 @app.route("/api/refresh")
 def refresh():
@@ -110,6 +114,8 @@ def refresh():
         page = 1
         stop = False
         conn = get_db()
+        cur = conn.cursor()
+
         while not stop and page <= 50:
             r = requests.get(f"{BASE_URL}/all-notices/notice", params={"category-code": "400", "results-page-size": "50", "results-page": str(page)}, headers=HEADERS, timeout=10)
             entries = r.json().get("entry", [])
@@ -131,13 +137,16 @@ def refresh():
                     company_name = clean_name(n.get("title", "N/A"))
                     company_number, sector = get_company_info(company_name)
                     try:
-                        conn.execute("INSERT INTO insolvencies VALUES (?,?,?,?,?,?,?,?)",
+                        cur.execute(
+                            "INSERT INTO insolvencies VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO NOTHING",
                             (nid, company_name, n.get("f:notice-code", ""),
                              f"{BASE_URL}/notice/{nid}",
                              datetime.now().strftime("%Y-%m-%d %H:%M"),
                              nd_str[:10] if nd_str else "",
-                             company_number, sector))
-                        new += 1
+                             company_number, sector)
+                        )
+                        if cur.rowcount > 0:
+                            new += 1
                     except:
                         pass
             conn.commit()
@@ -150,43 +159,40 @@ def refresh():
 @app.route("/api/chart")
 def chart():
     conn = get_db()
-    rows = conn.execute("SELECT notice_code FROM insolvencies").fetchall()
+    cur = conn.cursor()
+    cur.execute("SELECT notice_code FROM insolvencies")
+    rows = cur.fetchall()
     conn.close()
     return jsonify(Counter(CODES.get(r[0], r[0]) for r in rows))
-
-@app.route("/api/sectors")
-def sectors():
-    conn = get_db()
-    rows = conn.execute("SELECT sector FROM insolvencies WHERE sector != ''").fetchall()
-    conn.close()
-    return jsonify(Counter(r[0] for r in rows))
 
 @app.route("/export/csv")
 def export_csv():
     conn = get_db()
-    rows = conn.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, company_number, sector FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC").fetchall()
+    cur = conn.cursor()
+    cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC")
+    rows = cur.fetchall()
     conn.close()
     output = io.StringIO()
     w = csv.writer(output)
-    w.writerow(["Company", "Company Number", "Sector", "Type", "Date", "Gazette URL", "Companies House URL"])
+    w.writerow(["Company", "Sector", "Type", "Date", "Gazette URL"])
     for row in rows:
-        ch = f"https://find-and-update.company-information.service.gov.uk/company/{row[5]}" if row[5] else ""
-        w.writerow([row[0], row[5] or "", row[6] or "", CODES.get(row[1], row[1]), row[4] or row[2], row[3], ch])
+        w.writerow([row[0], row[5] or "", CODES.get(row[1], row[1]), row[4] or row[2], row[3]])
     output.seek(0)
     return send_file(io.BytesIO(output.getvalue().encode()), mimetype="text/csv", as_attachment=True, download_name="insolvencies.csv")
 
 @app.route("/export/excel")
 def export_excel():
     conn = get_db()
-    rows = conn.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, company_number, sector FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC").fetchall()
+    cur = conn.cursor()
+    cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC")
+    rows = cur.fetchall()
     conn.close()
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Insolvencies"
-    ws.append(["Company", "Company Number", "Sector", "Type", "Date", "Gazette URL", "Companies House URL"])
+    ws.append(["Company", "Sector", "Type", "Date", "Gazette URL"])
     for row in rows:
-        ch = f"https://find-and-update.company-information.service.gov.uk/company/{row[5]}" if row[5] else ""
-        ws.append([row[0], row[5] or "", row[6] or "", CODES.get(row[1], row[1]), row[4] or row[2], row[3], ch])
+        ws.append([row[0], row[5] or "", CODES.get(row[1], row[1]), row[4] or row[2], row[3]])
     for col in ws.columns:
         ws.column_dimensions[col[0].column_letter].width = 25
     output = io.BytesIO()
