@@ -69,4 +69,76 @@
 <div id="charts" class="panel">
   <div id="chart-container">
     <h2 style="font-size:16px; font-weight:500; margin-bottom:8px;">Insolvencies by Type</h2>
-    <p class="tot
+    <p class="total" id="chart-total"></p>
+    <div id="bars"></div>
+  </div>
+</div>
+<script>
+let allData = [];
+
+function badgeClass(type) {
+  if (type.includes('Admin')) return 'badge-admin';
+  if (type.includes('Compulsory')) return 'badge-liq';
+  if (type.includes('Winding')) return 'badge-wind';
+  if (type.includes('Receivership')) return 'badge-rec';
+  return 'badge-cvl';
+}
+
+function loadNotices() {
+  fetch('/api/notices').then(r => r.json()).then(data => {
+    allData = data;
+    document.getElementById('total').textContent = data.length + ' notices';
+    renderTable(data);
+  });
+}
+
+function renderTable(data) {
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = data.map(r => `
+    <tr>
+      <td>${r.company}</td>
+      <td><span class="badge ${badgeClass(r.type)}">${r.type}</span></td>
+      <td>${r.date}</td>
+      <td><a href="${r.url}" target="_blank">View</a></td>
+    </tr>`).join('');
+}
+
+function filterTable() {
+  const s = document.getElementById('search').value.toLowerCase();
+  renderTable(allData.filter(r => r.company.toLowerCase().includes(s)));
+}
+
+function refresh() {
+  document.getElementById('status').textContent = 'Fetching...';
+  fetch('/api/refresh').then(r => r.json()).then(d => {
+    document.getElementById('status').textContent = d.status === 'ok' ? d.new + ' new notices found.' : 'Error: ' + d.message;
+    loadNotices();
+    loadChart();
+  });
+}
+
+function loadChart() {
+  fetch('/api/chart').then(r => r.json()).then(data => {
+    const total = Object.values(data).reduce((a, b) => a + b, 0);
+    document.getElementById('chart-total').textContent = total + ' total notices';
+    const max = Math.max(...Object.values(data));
+    document.getElementById('bars').innerHTML = Object.entries(data).sort((a,b) => b[1]-a[1]).map(([k,v]) => `
+      <div class="bar-wrap">
+        <div class="bar-label"><span>${k}</span><span>${v}</span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${Math.max(4, Math.round(v/max*100))}%">${v}</div></div>
+      </div>`).join('');
+  });
+}
+
+function switchTab(id, el) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  el.classList.add('active');
+}
+
+loadNotices();
+loadChart();
+</script>
+</body>
+</html>
