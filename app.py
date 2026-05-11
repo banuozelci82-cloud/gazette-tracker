@@ -3,11 +3,9 @@ import requests, csv, io, os, openpyxl
 from datetime import datetime, timedelta
 from collections import Counter
 import psycopg2
-from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 BASE_URL = "https://www.thegazette.co.uk"
-CH_BASE = "https://api.company-information.service.gov.uk"
 CODES = {
     "2406": "Compulsory Liquidation",
     "2410": "Compulsory Liquidation",
@@ -43,56 +41,6 @@ def get_db():
     conn.commit()
     return conn
 
-def get_sector_from_sic(sic):
-    if not sic:
-        return ""
-    code = int(sic[:2]) if sic[:2].isdigit() else 0
-    if code <= 3: return "Agriculture"
-    if code <= 9: return "Mining"
-    if code <= 33: return "Manufacturing"
-    if code <= 35: return "Energy"
-    if code <= 39: return "Water & Waste"
-    if code <= 43: return "Construction"
-    if code <= 47: return "Retail & Wholesale"
-    if code <= 49: return "Transport"
-    if code <= 53: return "Postal & Courier"
-    if code <= 56: return "Hospitality"
-    if code <= 63: return "IT & Media"
-    if code <= 66: return "Finance"
-    if code <= 68: return "Real Estate"
-    if code <= 75: return "Professional Services"
-    if code <= 82: return "Admin & Support"
-    if code <= 84: return "Public Administration"
-    if code <= 85: return "Education"
-    if code <= 88: return "Health & Social"
-    if code <= 93: return "Arts & Entertainment"
-    if code <= 96: return "Other Services"
-    return "Other"
-
-def get_company_info(company_name):
-    try:
-        api_key = os.environ.get("COMPANIES_HOUSE_API_KEY", "")
-        r = requests.get(
-            f"{CH_BASE}/search/companies",
-            params={"q": company_name, "items_per_page": 1},
-            auth=(api_key, ""),
-            timeout=10
-        )
-        items = r.json().get("items", [])
-        if items:
-            company_number = items[0].get("company_number", "")
-            detail = requests.get(
-                f"{CH_BASE}/company/{company_number}",
-                auth=(api_key, ""),
-                timeout=10
-            ).json()
-            sic_codes = detail.get("sic_codes", [])
-            sector = get_sector_from_sic(sic_codes[0] if sic_codes else "")
-            return company_number, sector
-    except:
-        pass
-    return "", ""
-
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -115,7 +63,6 @@ def refresh():
         stop = False
         conn = get_db()
         cur = conn.cursor()
-
         while not stop and page <= 50:
             r = requests.get(f"{BASE_URL}/all-notices/notice", params={"category-code": "400", "results-page-size": "50", "results-page": str(page)}, headers=HEADERS, timeout=10)
             entries = r.json().get("entry", [])
@@ -135,7 +82,6 @@ def refresh():
                 if n.get("f:notice-code") in CODES:
                     nid = n.get("id", "").split("/")[-1]
                     company_name = clean_name(n.get("title", "N/A"))
-                    company_number, sector = get_company_info(company_name)
                     try:
                         cur.execute(
                             "INSERT INTO insolvencies VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO NOTHING",
@@ -143,8 +89,7 @@ def refresh():
                              f"{BASE_URL}/notice/{nid}",
                              datetime.now().strftime("%Y-%m-%d %H:%M"),
                              nd_str[:10] if nd_str else "",
-                             company_number, sector)
-                        )
+                             "", ""))
                         if cur.rowcount > 0:
                             new += 1
                     except:
