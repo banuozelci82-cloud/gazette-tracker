@@ -69,6 +69,16 @@ def refresh():
     new_us = refresh_us()
     return jsonify({"status": "ok", "new_uk": new_uk, "new_us": new_us})
 
+@app.route("/api/clear_us")
+def clear_us():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM insolvencies WHERE country = 'US'")
+    conn.commit()
+    deleted = cur.rowcount
+    conn.close()
+    return jsonify({"deleted": deleted})
+
 def refresh_uk():
     try:
         new = 0
