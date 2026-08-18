@@ -120,7 +120,7 @@ def refresh_uk():
 
 def refresh_us():
     try:
-        cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
         today = datetime.now().strftime("%Y-%m-%d")
         url = "https://efts.sec.gov/LATEST/search-index?q=%221.03%22&forms=8-K&dateRange=custom&startdt=" + cutoff + "&enddt=" + today
         r = requests.get(url, headers=SEC_HEADERS, timeout=15)
