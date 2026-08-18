@@ -77,7 +77,7 @@ def refresh_uk():
         cur = conn.cursor()
         while page <= 10:
             params = {"category-code": "400", "results-page-size": "50", "results-page": str(page)}
-            r = requests.get(f"{BASE_URL}/all-notices/notice", params=params, headers=HEADERS, timeout=10)
+            r = requests.get(BASE_URL + "/all-notices/notice", params=params, headers=HEADERS, timeout=10)
             entries = r.json().get("entry", [])
             if not entries:
                 break
@@ -90,7 +90,7 @@ def refresh_uk():
                         cur.execute(
                             "INSERT INTO insolvencies VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO NOTHING",
                             (nid, company_name, n.get("f:notice-code", ""),
-                             f"{BASE_URL}/notice/{nid}",
+                             BASE_URL + "/notice/" + nid,
                              datetime.now().strftime("%Y-%m-%d %H:%M"),
                              nd_str[:10] if nd_str else "",
                              "", "", "UK")
@@ -98,21 +98,21 @@ def refresh_uk():
                         if cur.rowcount > 0:
                             new += 1
                     except Exception as e:
-                        print(f"UK insert error: {e}")
+                        print("UK insert error: " + str(e))
                         conn.rollback()
             conn.commit()
             page += 1
         conn.close()
         return new
     except Exception as e:
-        print(f"UK refresh error: {e}")
+        print("UK refresh error: " + str(e))
         return 0
 
 def refresh_us():
     try:
         cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
         today = datetime.now().strftime("%Y-%m-%d")
-        url = "https://efts.sec.gov/LATEST/search-index?q=%22Item+1.03%22+%22bankruptcy%22&forms=8-K&dateRange=custom&startdt=" + cutoff + "&enddt=" + today
+        url = "https://efts.sec.gov/LATEST/search-index?q=%221.03%22&forms=8-K&dateRange=custom&startdt=" + cutoff + "&enddt=" + today
         r = requests.get(url, headers=SEC_HEADERS, timeout=15)
         hits = r.json().get("hits", {}).get("hits", [])
         conn = get_db()
@@ -120,6 +120,9 @@ def refresh_us():
         new = 0
         for h in hits:
             src = h.get("_source", {})
+            items = src.get("items", [])
+            if "1.03" not in items:
+                continue
             names = src.get("display_names", [])
             if not names:
                 continue
@@ -140,13 +143,13 @@ def refresh_us():
                 if cur.rowcount > 0:
                     new += 1
             except Exception as e:
-                print(f"US insert error: {e}")
+                print("US insert error: " + str(e))
                 conn.rollback()
         conn.commit()
         conn.close()
         return new
     except Exception as e:
-        print(f"US refresh error: {e}")
+        print("US refresh error: " + str(e))
         return 0
 
 @app.route("/api/chart")
