@@ -70,28 +70,19 @@ def refresh():
 
 def refresh_uk():
     try:
-        cutoff = datetime.now() - timedelta(days=7)
         new = 0
         page = 1
-        stop = False
         conn = get_db()
         cur = conn.cursor()
-        while not stop and page <= 50:
-            r = requests.get(f"{BASE_URL}/all-notices/notice", params={"category-code": "400", "results-page-size": "50", "results-page": str(page)}, headers=HEADERS, timeout=10)
+        while page <= 10:
+            r = requests.get(f"{BASE_URL}/all-notices/notice",
+                params={"category-code": "400", "results-page-size": "50", "results-page": str(page)},
+                headers=HEADERS, timeout=10)
             entries = r.json().get("entry", [])
             if not entries:
                 break
             for n in entries:
                 nd_str = n.get("f:publish-date", "") or n.get("updated", "")
-                nd = None
-                if nd_str:
-                    try:
-                        nd = datetime.fromisoformat(nd_str[:10])
-                    except:
-                        pass
-                if nd and nd < cutoff:
-                    stop = True
-                    break
                 if n.get("f:notice-code") in CODES:
                     nid = n.get("id", "").split("/")[-1]
                     company_name = clean_name(n.get("title", "N/A"))
@@ -100,10 +91,12 @@ def refresh_uk():
                             (nid, company_name, n.get("f:notice-code", ""),
                              f"{BASE_URL}/notice/{nid}",
                              datetime.now().strftime("%Y-%m-%d %H:%M"),
-                             nd_str[:10] if nd_str else "", "", "", "UK"))
+                             nd_str[:10] if nd_str else "",
+                             "", "", "UK"))
                         if cur.rowcount > 0:
                             new += 1
-                    except:
+                    except Exception as e:
+                        print(f"Insert error: {e}")
                         conn.rollback()
             conn.commit()
             page += 1
@@ -119,84 +112,11 @@ def refresh_us():
         today = datetime.now().strftime("%Y-%m-%d")
         r = requests.get(
             f"https://efts.sec.gov/LATEST/search-index?q=%22Item+1.03%22+%22bankruptcy%22&forms=8-K&dateRange=custom&startdt={cutoff}&enddt={today}",
-            headers=SEC_HEADERS,
-            timeout=15
-        )
+            headers=SEC_HEADERS, timeout=15)
         hits = r.json().get("hits", {}).get("hits", [])
         conn = get_db()
         cur = conn.cursor()
         new = 0
         for h in hits:
             src = h.get("_source", {})
-            names = src.get("display_names", [])
-            if not names:
-                continue
-            raw_name = names[0]
-            company_name = raw_name.split("(")[0].strip()
-            file_date = src.get("file_date", "")
-            adsh = src.get("adsh", "").replace("-", "")
-            notice_id = f"US-{adsh}"
-            url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={src.get('ciks', [''])[0]}&type=8-K&dateb=&owner=include&count=10"
-            try:
-                cur.execute("INSERT INTO insolvencies VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO NOTHING",
-                    (notice_id, company_name, "Chapter 11",
-                     url,
-                     datetime.now().strftime("%Y-%m-%d %H:%M"),
-                     file_date, "", "", "US"))
-                if cur.rowcount > 0:
-                    new += 1
-            except:
-                conn.rollback()
-        conn.commit()
-        conn.close()
-        return new
-    except Exception as e:
-        print(f"US refresh error: {e}")
-        return 0
-
-@app.route("/api/chart")
-def chart():
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT notice_code FROM insolvencies")
-    rows = cur.fetchall()
-    conn.close()
-    return jsonify(Counter(CODES.get(r[0], r[0]) for r in rows))
-
-@app.route("/export/csv")
-def export_csv():
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector, country FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC")
-    rows = cur.fetchall()
-    conn.close()
-    output = io.StringIO()
-    w = csv.writer(output)
-    w.writerow(["Company", "Country", "Sector", "Type", "Date", "URL"])
-    for row in rows:
-        w.writerow([row[0], row[6] or "UK", row[5] or "", CODES.get(row[1], row[1]), row[4] or row[2], row[3]])
-    output.seek(0)
-    return send_file(io.BytesIO(output.getvalue().encode()), mimetype="text/csv", as_attachment=True, download_name="insolvencies.csv")
-
-@app.route("/export/excel")
-def export_excel():
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector, country FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC")
-    rows = cur.fetchall()
-    conn.close()
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Insolvencies"
-    ws.append(["Company", "Country", "Sector", "Type", "Date", "URL"])
-    for row in rows:
-        ws.append([row[0], row[6] or "UK", row[5] or "", CODES.get(row[1], row[1]), row[4] or row[2], row[3]])
-    for col in ws.columns:
-        ws.column_dimensions[col[0].column_letter].width = 25
-    output = io.BytesIO()
-    wb.save(output)
-    output.seek(0)
-    return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="insolvencies.xlsx")
-
-if __name__ == "__main__":
-    app.run(debug=True)
+            names
