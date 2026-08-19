@@ -98,7 +98,7 @@ def refresh_uk():
                     company_name = clean_name(n.get("title", "N/A"))
                     try:
                         cur.execute(
-                            "INSERT INTO insolvencies VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO NOTHING",
+                            "INSERT INTO insolvencies VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO UPDATE SET notice_date = EXCLUDED.notice_date, date_fetched = EXCLUDED.date_fetched",
                             (nid, company_name, n.get("f:notice-code", ""),
                              BASE_URL + "/notice/" + nid,
                              datetime.now().strftime("%Y-%m-%d %H:%M"),
