@@ -171,6 +171,19 @@ def fix_dates():
     updated = cur.rowcount
     conn.close()
     return jsonify({"updated": updated})
+
+@app.route("/api/debug3")
+def debug3():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM insolvencies WHERE country = 'UK' AND date_fetched LIKE '2026-08-19%'")
+    uk_today = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM insolvencies WHERE country = 'UK'")
+    uk_total = cur.fetchone()[0]
+    cur.execute("SELECT MAX(notice_date) FROM insolvencies WHERE country = 'UK'")
+    latest = cur.fetchone()[0]
+    conn.close()
+    return jsonify({"uk_today": uk_today, "uk_total": uk_total, "latest_uk_date": latest})
     
 @app.route("/api/chart")
 def chart():
