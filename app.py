@@ -216,6 +216,15 @@ def export_excel():
     output.seek(0)
     return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="insolvencies.xlsx")
 
+@app.route("/api/debug2")
+def debug2():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT company_name, notice_date, date_fetched FROM insolvencies ORDER BY date_fetched DESC LIMIT 5")
+    rows = cur.fetchall()
+    conn.close()
+    return jsonify([{"company": r[0], "notice_date": r[1], "date_fetched": r[2]} for r in rows])
+    
 @app.route("/api/debug")
 def debug():
     import requests
