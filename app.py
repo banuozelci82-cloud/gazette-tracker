@@ -79,20 +79,6 @@ def clear_us():
     conn.close()
     return jsonify({"deleted": deleted})
 
-@app.route("/api/debug4")
-def debug4():
-    r = requests.get(BASE_URL + "/all-notices/notice",
-        params={"category-code": "400", "results-page-size": "10"},
-        headers=HEADERS, timeout=10)
-    entries = r.json().get("entry", [])
-    return jsonify([{
-        "id": e.get("id","").split("/")[-1],
-        "title": e.get("title",""),
-        "updated": e.get("updated",""),
-        "code": e.get("f:notice-code",""),
-        "publish": e.get("f:publish-date","")
-    } for e in entries])
-
 def refresh_uk():
     try:
         new = 0
