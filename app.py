@@ -220,5 +220,19 @@ def export_excel():
     output.seek(0)
     return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="insolvencies.xlsx")
 
+@app.route("/api/debug4")
+def debug4():
+    r = requests.get(BASE_URL + "/all-notices/notice",
+        params={"category-code": "400", "results-page-size": "10"},
+        headers=HEADERS, timeout=10)
+    entries = r.json().get("entry", [])
+    return jsonify([{
+        "id": e.get("id","").split("/")[-1],
+        "title": e.get("title",""),
+        "updated": e.get("updated",""),
+        "code": e.get("f:notice-code",""),
+        "publish": e.get("f:publish-date","")
+    } for e in entries])
+    
 if __name__ == "__main__":
     app.run(debug=True)
