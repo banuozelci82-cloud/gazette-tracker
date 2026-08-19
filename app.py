@@ -79,13 +79,27 @@ def clear_us():
     conn.close()
     return jsonify({"deleted": deleted})
 
+@app.route("/api/debug4")
+def debug4():
+    r = requests.get(BASE_URL + "/all-notices/notice",
+        params={"category-code": "400", "results-page-size": "10", "results-page": "1"},
+        headers=HEADERS, timeout=10)
+    entries = r.json().get("entry", [])
+    return jsonify([{
+        "id": e.get("id","").split("/")[-1],
+        "title": e.get("title",""),
+        "updated": e.get("updated",""),
+        "code": e.get("f:notice-code",""),
+        "publish": e.get("f:publish-date","")
+    } for e in entries])
+
 def refresh_uk():
     try:
         new = 0
         page = 1
         conn = get_db()
         cur = conn.cursor()
-        while page <= 10:
+        while page <= 20:
             params = {"category-code": "400", "results-page-size": "50", "results-page": str(page)}
             r = requests.get(BASE_URL + "/all-notices/notice", params=params, headers=HEADERS, timeout=10)
             entries = r.json().get("entry", [])
@@ -93,6 +107,11 @@ def refresh_uk():
                 break
             for n in entries:
                 nd_str = n.get("f:publish-date", "") or n.get("updated", "")
+                if nd_str:
+                    nd_date = nd_str[:10]
+                    cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+                    if nd_date < cutoff:
+                        break
                 if n.get("f:notice-code") in CODES:
                     nid = n.get("id", "").split("/")[-1]
                     company_name = clean_name(n.get("title", "N/A"))
@@ -206,19 +225,5 @@ def export_excel():
     output.seek(0)
     return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="insolvencies.xlsx")
 
-@app.route("/api/debug4")
-def debug4():
-    r = requests.get(BASE_URL + "/all-notices/notice",
-        params={"category-code": "400", "results-page-size": "10"},
-        headers=HEADERS, timeout=10)
-    entries = r.json().get("entry", [])
-    return jsonify([{
-        "id": e.get("id","").split("/")[-1],
-        "title": e.get("title",""),
-        "updated": e.get("updated",""),
-        "code": e.get("f:notice-code",""),
-        "publish": e.get("f:publish-date","")
-    } for e in entries])
-    
 if __name__ == "__main__":
     app.run(debug=True)
