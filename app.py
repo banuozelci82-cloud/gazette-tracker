@@ -162,6 +162,16 @@ def refresh_us():
         print("US refresh error: " + str(e))
         return 0
 
+@app.route("/api/fix_dates")
+def fix_dates():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE insolvencies SET notice_date = date_fetched WHERE notice_date = '' OR notice_date IS NULL")
+    conn.commit()
+    updated = cur.rowcount
+    conn.close()
+    return jsonify({"updated": updated})
+    
 @app.route("/api/chart")
 def chart():
     conn = get_db()
