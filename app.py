@@ -206,5 +206,12 @@ def export_excel():
     output.seek(0)
     return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="insolvencies.xlsx")
 
+@app.route("/api/debug")
+def debug():
+    import requests
+    r = requests.get(BASE_URL + "/all-notices/notice", params={"category-code": "400", "results-page-size": "5"}, headers=HEADERS, timeout=10)
+    entries = r.json().get("entry", [])
+    return jsonify([{"title": e.get("title",""), "updated": e.get("updated",""), "code": e.get("f:notice-code","")} for e in entries])
+    
 if __name__ == "__main__":
     app.run(debug=True)
