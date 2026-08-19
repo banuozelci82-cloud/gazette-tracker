@@ -79,6 +79,20 @@ def clear_us():
     conn.close()
     return jsonify({"deleted": deleted})
 
+@app.route("/api/debug4")
+def debug4():
+    r = requests.get(BASE_URL + "/all-notices/notice",
+        params={"category-code": "400", "results-page-size": "10"},
+        headers=HEADERS, timeout=10)
+    entries = r.json().get("entry", [])
+    return jsonify([{
+        "id": e.get("id","").split("/")[-1],
+        "title": e.get("title",""),
+        "updated": e.get("updated",""),
+        "code": e.get("f:notice-code",""),
+        "publish": e.get("f:publish-date","")
+    } for e in entries])
+
 def refresh_uk():
     try:
         new = 0
@@ -162,29 +176,6 @@ def refresh_us():
         print("US refresh error: " + str(e))
         return 0
 
-@app.route("/api/fix_dates")
-def fix_dates():
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("UPDATE insolvencies SET notice_date = date_fetched WHERE notice_date = '' OR notice_date IS NULL")
-    conn.commit()
-    updated = cur.rowcount
-    conn.close()
-    return jsonify({"updated": updated})
-
-@app.route("/api/debug3")
-def debug3():
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM insolvencies WHERE country = 'UK' AND date_fetched LIKE '2026-08-19%'")
-    uk_today = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM insolvencies WHERE country = 'UK'")
-    uk_total = cur.fetchone()[0]
-    cur.execute("SELECT MAX(notice_date) FROM insolvencies WHERE country = 'UK'")
-    latest = cur.fetchone()[0]
-    conn.close()
-    return jsonify({"uk_today": uk_today, "uk_total": uk_total, "latest_uk_date": latest})
-    
 @app.route("/api/chart")
 def chart():
     conn = get_db()
@@ -229,35 +220,5 @@ def export_excel():
     output.seek(0)
     return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="insolvencies.xlsx")
 
-@app.route("/api/debug2")
-def debug2():
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT company_name, notice_date, date_fetched FROM insolvencies ORDER BY date_fetched DESC LIMIT 5")
-    rows = cur.fetchall()
-    conn.close()
-    return jsonify([{"company": r[0], "notice_date": r[1], "date_fetched": r[2]} for r in rows])
-    
-@app.route("/api/debug")
-def debug():
-    import requests
-    r = requests.get(BASE_URL + "/all-notices/notice", params={"category-code": "400", "results-page-size": "5"}, headers=HEADERS, timeout=10)
-    entries = r.json().get("entry", [])
-    return jsonify([{"title": e.get("title",""), "updated": e.get("updated",""), "code": e.get("f:notice-code","")} for e in entries])
-    
 if __name__ == "__main__":
     app.run(debug=True)
-
-@app.route("/api/debug4")
-def debug4():
-    r = requests.get(BASE_URL + "/all-notices/notice", 
-        params={"category-code": "400", "results-page-size": "10"}, 
-        headers=HEADERS, timeout=10)
-    entries = r.json().get("entry", [])
-    return jsonify([{
-        "id": e.get("id","").split("/")[-1],
-        "title": e.get("title",""),
-        "updated": e.get("updated",""),
-        "code": e.get("f:notice-code",""),
-        "publish": e.get("f:publish-date","")
-    } for e in entries])
