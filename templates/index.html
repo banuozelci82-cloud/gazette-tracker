@@ -164,7 +164,7 @@ function doRefresh() {
   document.getElementById('status').textContent = 'Fetching...';
   fetch('/api/refresh').then(function(r) { return r.json(); }).then(function(d) {
     if (d.status === 'ok') {
-      document.getElementById('status').textContent = d.new_uk + ' new UK, ' + d.new_us + ' new US notices.';
+      document.getElementById('status').textContent = d.new_uk + ' new UK, ' + (d.new_us_public + d.new_us_nonpublic) + ' new US notices.';
     } else {
       document.getElementById('status').textContent = 'Error: ' + d.message;
     }
