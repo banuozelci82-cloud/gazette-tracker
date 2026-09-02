@@ -359,5 +359,15 @@ def export_excel():
     output.seek(0)
     return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="insolvencies.xlsx")
 
+@app.route("/api/debug_us")
+def debug_us():
+    api_key = os.environ.get("COURTLISTENER_API_KEY", "")
+    cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    cl_headers = {"Authorization": "Token " + api_key}
+    url = "https://www.courtlistener.com/api/rest/v4/search/?type=d&q=LLC+OR+Inc+OR+Corp+OR+Limited&order_by=dateFiled+desc&filed_after=" + cutoff + "&page_size=10&court=deb+OR+nysbk+OR+casbke+OR+ilnb+OR+txsb+OR+mdb+OR+njb+OR+ganb+OR+flsb+OR+ohsb"
+    r = requests.get(url, headers=cl_headers, timeout=15)
+    results = r.json().get("results", [])
+    return jsonify([{"name": item.get("caseName"), "chapter": item.get("chapter"), "date": item.get("dateFiled"), "court": item.get("court_id")} for item in results])
+    
 if __name__ == "__main__":
-    app.run(debug=True)
+        app.run(debug=True)
