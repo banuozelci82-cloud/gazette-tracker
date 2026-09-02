@@ -82,8 +82,9 @@ def notices():
 @app.route("/api/refresh")
 def refresh():
     new_uk = refresh_uk()
-    new_us = refresh_us()
-    return jsonify({"status": "ok", "new_uk": new_uk, "new_us": new_us})
+    new_us_public = refresh_us_public()
+    new_us_nonpublic = refresh_us_nonpublic()
+    return jsonify({"status": "ok", "new_uk": new_uk, "new_us_public": new_us_public, "new_us_nonpublic": new_us_nonpublic})
 
 @app.route("/api/upload_ireland", methods=["POST"])
 def upload_ireland():
@@ -211,7 +212,7 @@ def refresh_uk():
         print("UK refresh error: " + str(e))
         return 0
 
-def refresh_us():
+def refresh_us_public():
     try:
         cutoff = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
         today = datetime.now().strftime("%Y-%m-%d")
@@ -232,13 +233,13 @@ def refresh_us():
             company_name = names[0].split("(")[0].strip()
             file_date = src.get("file_date", "")
             adsh = src.get("adsh", "").replace("-", "")
-            notice_id = "US-" + adsh
+            notice_id = "US-SEC-" + adsh
             cik = src.get("ciks", [""])[0]
             filing_url = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=" + cik + "&type=8-K&owner=include&count=10"
             try:
                 cur.execute(
                     "INSERT INTO insolvencies VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO NOTHING",
-                    (notice_id, company_name, "Chapter 11",
+                    (notice_id, company_name, "Chapter 11 (Public)",
                      filing_url,
                      datetime.now().strftime("%Y-%m-%d %H:%M"),
                      file_date, "", "", "US")
@@ -246,13 +247,64 @@ def refresh_us():
                 if cur.rowcount > 0:
                     new += 1
             except Exception as e:
-                print("US insert error: " + str(e))
+                print("US public insert error: " + str(e))
                 conn.rollback()
         conn.commit()
         conn.close()
         return new
     except Exception as e:
-        print("US refresh error: " + str(e))
+        print("US public refresh error: " + str(e))
+        return 0
+
+def refresh_us_nonpublic():
+    try:
+        api_key = os.environ.get("COURTLISTENER_API_KEY", "")
+        if not api_key:
+            return 0
+        cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        cl_headers = {"Authorization": "Token " + api_key}
+        url = "https://www.courtlistener.com/api/rest/v4/search/?type=d&q=LLC+OR+Inc+OR+Corp+OR+Limited&order_by=dateFiled+desc&filed_after=" + cutoff + "&page_size=50&court=deb+OR+nysbk+OR+casbke+OR+ilnb+OR+txsb+OR+mdb+OR+njb+OR+ganb+OR+flsb+OR+ohsb"
+        r = requests.get(url, headers=cl_headers, timeout=15)
+        results = r.json().get("results", [])
+        conn = get_db()
+        cur = conn.cursor()
+        new = 0
+        for item in results:
+            chapter = item.get("chapter")
+            if str(chapter) not in ["11", "7"]:
+                continue
+            case_name = item.get("caseName", "")
+            if not case_name:
+                continue
+            words = case_name.lower().split()
+            personal_indicators = ["v.", "vs.", "in re"]
+            is_personal = any(w in ["v.", "vs."] for w in words)
+            if is_personal:
+                continue
+            docket_id = str(item.get("docket_id", ""))
+            notice_id = "US-CL-" + docket_id
+            date_filed = item.get("dateFiled", "")
+            court = item.get("court_id", "")
+            filing_url = "https://www.courtlistener.com" + item.get("docket_absolute_url", "")
+            notice_type = "Chapter " + str(chapter)
+            try:
+                cur.execute(
+                    "INSERT INTO insolvencies VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO NOTHING",
+                    (notice_id, case_name, notice_type,
+                     filing_url,
+                     datetime.now().strftime("%Y-%m-%d %H:%M"),
+                     date_filed, "", court, "US")
+                )
+                if cur.rowcount > 0:
+                    new += 1
+            except Exception as e:
+                print("US nonpublic insert error: " + str(e))
+                conn.rollback()
+        conn.commit()
+        conn.close()
+        return new
+    except Exception as e:
+        print("US nonpublic refresh error: " + str(e))
         return 0
 
 @app.route("/api/chart")
