@@ -264,7 +264,7 @@ def refresh_us_nonpublic():
             return 0
         cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
         cl_headers = {"Authorization": "Token " + api_key}
-        url = "https://www.courtlistener.com/api/rest/v4/search/?type=d&q=LLC+OR+Inc+OR+Corp+OR+Limited&order_by=dateFiled+desc&filed_after=" + cutoff + "&page_size=50&court=deb+OR+nysbk+OR+casbke+OR+ilnb+OR+txsb+OR+mdb+OR+njb+OR+ganb+OR+flsb+OR+ohsb"
+        url = "https://www.courtlistener.com/api/rest/v4/search/?type=d&q=LLC+OR+Inc+OR+Corp+OR+Limited+chapter+11&order_by=dateFiled+desc&filed_after=" + cutoff + "&page_size=50"
         r = requests.get(url, headers=cl_headers, timeout=15)
         results = r.json().get("results", [])
         conn = get_db()
