@@ -419,11 +419,10 @@ def export_excel():
 
 @app.route("/api/debug_fr")
 def debug_fr():
-    cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
     params = {
         "limit": 5,
         "order_by": "dateparution desc",
-        "where": "familleavis='collective' and dateparution>='" + cutoff + "'"
+        "where": "familleavis='collective'"
     }
     r = requests.get(BODACC_URL, params=params, headers=HEADERS, timeout=15)
     return jsonify(r.json())
