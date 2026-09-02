@@ -1,5 +1,5 @@
-from flask import Flask, render_template, jsonify, send_file
-import requests, csv, io, os, openpyxl
+from flask import Flask, render_template, jsonify, send_file, request
+import requests, csv, io, os, openpyxl, re, pdfplumber
 from datetime import datetime, timedelta
 from collections import Counter
 import psycopg2
@@ -20,6 +20,21 @@ CODES = {
     "2450": "Receivership",
     "2452": "Liquidation",
     "2454": "Winding Up",
+}
+IRELAND_CODES = {
+    "E2": "Liquidation",
+    "E12": "Winding Up Order",
+    "E19": "Administration",
+    "E20": "Provisional Liquidation",
+    "E21": "Liquidation",
+    "E22": "Winding Up Order",
+    "E35": "Examinership",
+    "E8": "Receivership",
+    "F15": "Insolvency Notice",
+    "G1": "Voluntary Winding Up",
+    "G2": "Voluntary Winding Up",
+    "G4": "Creditors Voluntary Liquidation",
+    "G1L": "Voluntary Winding Up",
 }
 HEADERS = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
 
@@ -54,9 +69,10 @@ def notices():
     cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector, country FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC")
     rows = cur.fetchall()
     conn.close()
+    all_codes = {**CODES, **IRELAND_CODES}
     return jsonify([{
         "company": r[0],
-        "type": CODES.get(r[1], r[1]),
+        "type": all_codes.get(r[1], r[1]),
         "date": r[4] or r[2],
         "url": r[3],
         "sector": r[5] or "",
@@ -69,6 +85,78 @@ def refresh():
     new_us = refresh_us()
     return jsonify({"status": "ok", "new_uk": new_uk, "new_us": new_us})
 
+@app.route("/api/upload_ireland", methods=["POST"])
+def upload_ireland():
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"})
+    f = request.files["file"]
+    if not f.filename.endswith(".pdf"):
+        return jsonify({"error": "Please upload a PDF file"})
+    try:
+        pdf_bytes = f.read()
+        notices = parse_ireland_pdf(pdf_bytes)
+        conn = get_db()
+        cur = conn.cursor()
+        new = 0
+        for n in notices:
+            try:
+                cur.execute(
+                    "INSERT INTO insolvencies VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO NOTHING",
+                    (n["id"], n["company_name"], n["notice_code"],
+                     "https://cro.ie/cro-gazette-publications/",
+                     datetime.now().strftime("%Y-%m-%d %H:%M"),
+                     n["notice_date"], n["company_number"], "", "IE")
+                )
+                if cur.rowcount > 0:
+                    new += 1
+            except Exception as e:
+                print("IE insert error: " + str(e))
+                conn.rollback()
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "ok", "new": new, "total_found": len(notices)})
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+def parse_ireland_pdf(pdf_bytes):
+    notices = []
+    try:
+        pdf = pdfplumber.open(io.BytesIO(pdf_bytes))
+        full_text = ""
+        for page in pdf.pages:
+            text = page.extract_text()
+            if text:
+                full_text += text + "\n"
+        lines = full_text.split("\n")
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            for code in IRELAND_CODES:
+                pattern = r"^(\d+)\s+(.+?)\s+" + re.escape(code) + r"\s+(\d{2}/\d{2}/\d{4})$"
+                m = re.match(pattern, line)
+                if m:
+                    company_number = m.group(1)
+                    company_name = m.group(2).strip()
+                    date_str = m.group(3)
+                    try:
+                        d = datetime.strptime(date_str, "%d/%m/%Y")
+                        notice_date = d.strftime("%Y-%m-%d")
+                    except:
+                        notice_date = date_str
+                    notice_id = "IE-" + company_number + "-" + code + "-" + notice_date.replace("-", "")
+                    notices.append({
+                        "id": notice_id,
+                        "company_name": company_name,
+                        "company_number": company_number,
+                        "notice_code": code,
+                        "notice_date": notice_date
+                    })
+                    break
+    except Exception as e:
+        print("PDF parse error: " + str(e))
+    return notices
+
 @app.route("/api/clear_us")
 def clear_us():
     conn = get_db()
@@ -78,20 +166,6 @@ def clear_us():
     deleted = cur.rowcount
     conn.close()
     return jsonify({"deleted": deleted})
-
-@app.route("/api/debug4")
-def debug4():
-    r = requests.get(BASE_URL + "/all-notices/notice",
-        params={"category-code": "400", "results-page-size": "10", "results-page": "1"},
-        headers=HEADERS, timeout=10)
-    entries = r.json().get("entry", [])
-    return jsonify([{
-        "id": e.get("id","").split("/")[-1],
-        "title": e.get("title",""),
-        "updated": e.get("updated",""),
-        "code": e.get("f:notice-code",""),
-        "publish": e.get("f:publish-date","")
-    } for e in entries])
 
 def refresh_uk():
     try:
@@ -188,7 +262,8 @@ def chart():
     cur.execute("SELECT notice_code FROM insolvencies")
     rows = cur.fetchall()
     conn.close()
-    return jsonify(Counter(CODES.get(r[0], r[0]) for r in rows))
+    all_codes = {**CODES, **IRELAND_CODES}
+    return jsonify(Counter(all_codes.get(r[0], r[0]) for r in rows))
 
 @app.route("/export/csv")
 def export_csv():
@@ -197,11 +272,12 @@ def export_csv():
     cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector, country FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC")
     rows = cur.fetchall()
     conn.close()
+    all_codes = {**CODES, **IRELAND_CODES}
     output = io.StringIO()
     w = csv.writer(output)
     w.writerow(["Company", "Country", "Sector", "Type", "Date", "URL"])
     for row in rows:
-        w.writerow([row[0], row[6] or "UK", row[5] or "", CODES.get(row[1], row[1]), row[4] or row[2], row[3]])
+        w.writerow([row[0], row[6] or "UK", row[5] or "", all_codes.get(row[1], row[1]), row[4] or row[2], row[3]])
     output.seek(0)
     return send_file(io.BytesIO(output.getvalue().encode()), mimetype="text/csv", as_attachment=True, download_name="insolvencies.csv")
 
@@ -212,12 +288,13 @@ def export_excel():
     cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector, country FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC")
     rows = cur.fetchall()
     conn.close()
+    all_codes = {**CODES, **IRELAND_CODES}
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Insolvencies"
     ws.append(["Company", "Country", "Sector", "Type", "Date", "URL"])
     for row in rows:
-        ws.append([row[0], row[6] or "UK", row[5] or "", CODES.get(row[1], row[1]), row[4] or row[2], row[3]])
+        ws.append([row[0], row[6] or "UK", row[5] or "", all_codes.get(row[1], row[1]), row[4] or row[2], row[3]])
     for col in ws.columns:
         ws.column_dimensions[col[0].column_letter].width = 25
     output = io.BytesIO()
