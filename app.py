@@ -448,5 +448,15 @@ def export_excel():
     output.seek(0)
     return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="insolvencies.xlsx")
 
+@app.route("/api/clear_fr")
+def clear_fr():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM insolvencies WHERE country = 'FR'")
+    conn.commit()
+    deleted = cur.rowcount
+    conn.close()
+    return jsonify({"deleted": deleted})
+    
 if __name__ == "__main__":
     app.run(debug=True)
