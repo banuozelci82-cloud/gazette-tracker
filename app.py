@@ -417,5 +417,16 @@ def export_excel():
     output.seek(0)
     return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="insolvencies.xlsx")
 
+@app.route("/api/debug_fr")
+def debug_fr():
+    cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
+    params = {
+        "limit": 5,
+        "order_by": "dateparution desc",
+        "where": "familleavis='collective' and dateparution>='" + cutoff + "'"
+    }
+    r = requests.get(BODACC_URL, params=params, headers=HEADERS, timeout=15)
+    return jsonify(r.json())
+    
 if __name__ == "__main__":
     app.run(debug=True)
