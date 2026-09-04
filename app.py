@@ -3,6 +3,7 @@ import requests, csv, io, os, openpyxl, re, pdfplumber, json
 from datetime import datetime, timedelta
 from collections import Counter
 import psycopg2
+from cayman_scraper import refresh_cayman
 
 app = Flask(__name__)
 BASE_URL = "https://www.thegazette.co.uk"
@@ -86,8 +87,9 @@ def refresh():
     new_us_public = refresh_us_public()
     new_us_nonpublic = refresh_us_nonpublic()
     new_fr = refresh_france()
+    new_ky = refresh_cayman()
     total_us = new_us_public + new_us_nonpublic
-    return jsonify({"status": "ok", "new_uk": new_uk, "new_us": total_us, "new_fr": new_fr})
+    return jsonify({"status": "ok", "new_uk": new_uk, "new_us": total_us, "new_fr": new_fr, "new_ky": new_ky})
 
 @app.route("/api/debug_fr")
 def debug_fr():
@@ -457,6 +459,16 @@ def clear_fr():
     deleted = cur.rowcount
     conn.close()
     return jsonify({"deleted": deleted})
-    
+
+@app.route("/api/clear_ky")
+def clear_ky():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM insolvencies WHERE country = 'KY'")
+    conn.commit()
+    deleted = cur.rowcount
+    conn.close()
+    return jsonify({"deleted": deleted})
+
 if __name__ == "__main__":
     app.run(debug=True)
