@@ -5,13 +5,6 @@ gunicorn
 beautifulsoup4
 psycopg2-binary
 schedule
-flask
-requests
-openpyxl
-gunicorn
-beautifulsoup4
-psycopg2-binary
-schedule
 pdfplumber
 PyMuPDF
 anthropic
