@@ -13,3 +13,5 @@ beautifulsoup4
 psycopg2-binary
 schedule
 pdfplumber
+PyMuPDF
+anthropic
