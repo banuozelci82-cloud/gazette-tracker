@@ -3,7 +3,7 @@ import requests, csv, io, os, openpyxl, re, pdfplumber, json
 from datetime import datetime, timedelta
 from collections import Counter
 import psycopg2
-from cayman_scraper import refresh_cayman
+from cayman_scraper import refresh_cayman, process_cayman_upload
 
 app = Flask(__name__)
 BASE_URL = "https://www.thegazette.co.uk"
@@ -136,6 +136,20 @@ def upload_ireland():
         conn.commit()
         conn.close()
         return jsonify({"status": "ok", "new": new, "total_found": len(notices)})
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+@app.route("/api/upload_cayman", methods=["POST"])
+def upload_cayman():
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"})
+    f = request.files["file"]
+    if not f.filename.endswith(".pdf"):
+        return jsonify({"error": "Please upload a PDF file"})
+    try:
+        pdf_bytes = f.read()
+        new, total_found = process_cayman_upload(pdf_bytes, f.filename)
+        return jsonify({"status": "ok", "new": new, "total_found": total_found})
     except Exception as e:
         return jsonify({"error": str(e)})
 
@@ -276,7 +290,6 @@ def refresh_france():
                 notice_id = "FR-" + item.get("id", "")
                 date_str = item.get("dateparution", "")
                 notice_date = date_str if date_str else ""
-                # skip if date is too old
                 if notice_date and len(notice_date) == 10 and notice_date < cutoff_str:
                     continue
                 jugement = item.get("jugement", "{}")
