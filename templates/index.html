@@ -43,6 +43,8 @@
   .flag-uk { background: #003082; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
   .flag-us { background: #b22234; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
   .flag-ie { background: #169b62; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
+  .flag-fr { background: #0055a4; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
+  .flag-ky { background: #00205b; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
   #chart-container { background: white; border-radius: 8px; padding: 2rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); max-width: 700px; }
   .bar-wrap { margin: 8px 0; }
   .bar-label { font-size: 13px; margin-bottom: 4px; display: flex; justify-content: space-between; }
@@ -64,6 +66,7 @@
     <option value="US">US</option>
     <option value="IE">Ireland</option>
     <option value="FR">France</option>
+    <option value="KY">Cayman Islands</option>
   </select>
   <select id="type-filter" onchange="filterTable()">
     <option value="">All Types</option>
@@ -77,6 +80,9 @@
     <option>Examinership</option>
     <option>Voluntary Winding Up</option>
     <option>Winding Up Order</option>
+    <option>Voluntary Liquidation</option>
+    <option>Court-Ordered Liquidation</option>
+    <option>Final Meeting of Shareholders</option>
   </select>
   <button class="btn-primary" onclick="doRefresh()" style="padding:8px 16px; border:none; border-radius:6px; font-size:14px; cursor:pointer; color:white;">Refresh All</button>
   <a class="btn-success" href="/export/excel" style="padding:8px 16px; border-radius:6px; font-size:14px; color:white; text-decoration:none;">Export Excel</a>
@@ -88,6 +94,12 @@
   <input type="file" id="ireland-file" accept=".pdf">
   <button class="btn-ireland" onclick="uploadIreland()" style="padding:8px 16px; border:none; border-radius:6px; font-size:14px; cursor:pointer; color:white;">Upload Ireland PDF</button>
   <span id="ireland-status" style="font-size:13px; color:#2e7d32;"></span>
+</div>
+<div class="ireland-bar" style="background:#e8eef7; border-bottom-color:#b0c4de;">
+  <label style="color:#00205b;">Cayman Islands (Gazette) — Download PDF from <a href="https://gov.ky/web/gazettes" target="_blank">gov.ky/web/gazettes</a> then upload:</label>
+  <input type="file" id="cayman-file" accept=".pdf">
+  <button onclick="uploadCayman()" style="padding:8px 16px; border:none; border-radius:6px; font-size:14px; cursor:pointer; color:white; background:#00205b;">Upload Cayman PDF</button>
+  <span id="cayman-status" style="font-size:13px; color:#00205b;"></span>
 </div>
 <div class="tabs">
   <div class="tab active" onclick="switchTab('notices', this)">Notices</div>
@@ -113,15 +125,19 @@ function badgeClass(type) {
   if (type === 'Chapter 11') return 'badge-ch11';
   if (type.indexOf('Admin') >= 0) return 'badge-admin';
   if (type.indexOf('Compulsory') >= 0) return 'badge-liq';
+  if (type.indexOf('Court-Ordered') >= 0) return 'badge-liq';
   if (type.indexOf('Winding') >= 0) return 'badge-wind';
   if (type.indexOf('Receivership') >= 0) return 'badge-rec';
   if (type.indexOf('Examinership') >= 0) return 'badge-admin';
+  if (type.indexOf('Final Meeting') >= 0) return 'badge-cvl';
   return 'badge-cvl';
 }
 
 function flagClass(country) {
   if (country === 'US') return 'flag-us';
   if (country === 'IE') return 'flag-ie';
+  if (country === 'FR') return 'flag-fr';
+  if (country === 'KY') return 'flag-ky';
   return 'flag-uk';
 }
 
@@ -165,7 +181,7 @@ function doRefresh() {
   document.getElementById('status').textContent = 'Fetching...';
   fetch('/api/refresh').then(function(r) { return r.json(); }).then(function(d) {
     if (d.status === 'ok') {
-      document.getElementById('status').textContent = d.new_uk + ' new UK, ' + (d.new_us || 0) + ' new US, ' + (d.new_fr || 0) + ' new FR notices.';
+      document.getElementById('status').textContent = d.new_uk + ' new UK, ' + (d.new_us || 0) + ' new US, ' + (d.new_fr || 0) + ' new FR, ' + (d.new_ky || 0) + ' new KY notices.';
     } else {
       document.getElementById('status').textContent = 'Error: ' + d.message;
     }
@@ -192,6 +208,28 @@ function uploadIreland() {
         loadChart();
       } else {
         document.getElementById('ireland-status').textContent = 'Error: ' + (d.error || 'Unknown error');
+      }
+    });
+}
+
+function uploadCayman() {
+  var fileInput = document.getElementById('cayman-file');
+  if (!fileInput.files.length) {
+    alert('Please select the Cayman Gazette PDF file first');
+    return;
+  }
+  var formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+  document.getElementById('cayman-status').textContent = 'Uploading and processing (usually takes a few seconds per page)...';
+  fetch('/api/upload_cayman', {method: 'POST', body: formData})
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.status === 'ok') {
+        document.getElementById('cayman-status').textContent = d.new + ' new Cayman notices added (' + d.total_found + ' found in PDF)';
+        loadNotices();
+        loadChart();
+      } else {
+        document.getElementById('cayman-status').textContent = 'Error: ' + (d.error || 'Unknown error');
       }
     });
 }
