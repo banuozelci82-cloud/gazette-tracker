@@ -24,7 +24,7 @@ import psycopg2
 from bs4 import BeautifulSoup
 from anthropic import Anthropic
 
-GAZETTE_LIST_PAGE = "https://gov.ky/web/gazettes/gazettes"
+GAZETTE_HOME_PAGE = "https://gov.ky/web/gazettes"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 client = Anthropic()  # reads ANTHROPIC_API_KEY from the environment automatically
@@ -61,17 +61,48 @@ def get_db_connection():
 
 
 def find_latest_gazette_pdf():
-    """Find the most recent regular Gazette PDF (not Legislation/Extraordinary
-    Gazette, which don't carry commercial liquidation notices)."""
-    r = requests.get(GAZETTE_LIST_PAGE, headers=HEADERS, timeout=20)
+    """Two-step lookup against gov.ky's real structure:
+
+    1. On the Gazettes homepage, find the most recent link whose title matches
+       a plain "<year> Gazette <number>" pattern, e.g. "2026 Gazette 18" or
+       "2026-Gazette-4". This deliberately excludes "Legislation Gazette",
+       "Extraordinary Gazette", and their supplements, which use different
+       wording and don't carry commercial liquidation notices.
+    2. That link goes to an issue detail page (e.g. gov.ky/w/2026-gazette-4),
+       which has exactly one real PDF link on it — grab that.
+
+    (The homepage itself does NOT link directly to plain .pdf URLs the way
+    it looks like it might — the earlier version of this function checked
+    href.endswith(".pdf") against the homepage and always failed, because
+    gov.ky's document URLs put the .pdf in the middle of the path, e.g.
+    /documents/35692/0/Ga042026.pdf/<hash>?t=<timestamp>, and because the
+    homepage's "latest" list often shows Legislation/Extraordinary items
+    ahead of the regular Gazette anyway.)
+    """
+    r = requests.get(GAZETTE_HOME_PAGE, headers=HEADERS, timeout=20)
     soup = BeautifulSoup(r.text, "html.parser")
 
+    detail_url = None
+    pattern = re.compile(r"^\d{4}[\s-]+Gazette[\s-]+\d+$", re.IGNORECASE)
     for link in soup.find_all("a", href=True):
-        href = link["href"]
         text = link.get_text(strip=True)
-        if href.lower().endswith(".pdf") and "gazette" in text.lower() \
-                and "legislation" not in text.lower() and "extraordinary" not in text.lower():
+        if pattern.match(text):
+            href = link["href"]
+            detail_url = href if href.startswith("http") else "https://gov.ky" + href
+            break  # homepage lists newest first, so the first match wins
+
+    if not detail_url:
+        print("Cayman: could not find a Gazette issue link on the homepage")
+        return None
+
+    r2 = requests.get(detail_url, headers=HEADERS, timeout=20)
+    soup2 = BeautifulSoup(r2.text, "html.parser")
+    for link in soup2.find_all("a", href=True):
+        href = link["href"]
+        if ".pdf" in href.lower():
             return href if href.startswith("http") else "https://gov.ky" + href
+
+    print(f"Cayman: found issue page {detail_url} but no PDF link on it")
     return None
 
 
