@@ -1,34 +1,26 @@
 """
 Cayman Islands Gazette scraper — uses the Claude API (vision) to read
 liquidation/winding-up notices instead of a traditional PDF text-extraction
-library like pdfplumber.
+library like pdfplumber, since some Gazette issues are scans without a
+real text layer.
 
-Why this approach:
-- The Cayman Islands Gazette is published as a PDF, but some issues are
-  scans/images rather than PDFs with a real text layer, so pdfplumber's
-  extract_text() can silently return nothing.
-- Instead of extracting text and writing regex to parse it, this script
-  renders each PDF page as an image and asks Claude directly: "here's a
-  page, give me the notices as JSON." That works whether or not the PDF
-  has a text layer, and survives layout changes better than regex.
+Exposes refresh_cayman(), called from app.py's /api/refresh the same way
+refresh_uk() and refresh_france() are. Writes new rows into the same
+`insolvencies` table, country code "KY".
 
-Cost: roughly 1-2 cents per page with Claude Sonnet 5. A fortnightly
-gazette with a handful of relevant pages costs well under $5/year.
-
-Setup needed (one-time):
-    pip install requests beautifulsoup4 pymupdf anthropic
-
-Environment variable needed:
-    ANTHROPIC_API_KEY   (get one at console.anthropic.com, add it to
-                          Railway the same way you added GMAIL_APP_PASSWORD)
+Requires ANTHROPIC_API_KEY as an environment variable (set in Railway the
+same way GMAIL_APP_PASSWORD and DATABASE_URL are set).
 """
 
 import os
 import re
 import json
 import base64
+from datetime import datetime
+
 import requests
-import fitz  # PyMuPDF — renders PDF pages to images, no system install needed
+import fitz  # PyMuPDF
+import psycopg2
 from bs4 import BeautifulSoup
 from anthropic import Anthropic
 
@@ -59,14 +51,18 @@ on this page, respond with an empty array: []
 
 Example:
 [
-  {"company_name": "Example Fund Ltd", "notice_type": "Liquidation", "date": "2026-08-20", "liquidator_or_contact": "Maples Liquidation Services Limited"}
+  {"company_name": "Example Fund Ltd", "notice_type": "Voluntary Liquidation", "date": "2026-08-20", "liquidator_or_contact": "Maples Liquidation Services Limited"}
 ]
 """
 
 
+def get_db_connection():
+    return psycopg2.connect(os.environ.get("DATABASE_URL"))
+
+
 def find_latest_gazette_pdf():
-    """Find the most recent regular Gazette PDF (not Legislation/Extraordinary Gazette,
-    which don't carry commercial liquidation notices)."""
+    """Find the most recent regular Gazette PDF (not Legislation/Extraordinary
+    Gazette, which don't carry commercial liquidation notices)."""
     r = requests.get(GAZETTE_LIST_PAGE, headers=HEADERS, timeout=20)
     soup = BeautifulSoup(r.text, "html.parser")
 
@@ -89,93 +85,92 @@ def pdf_to_page_images(pdf_bytes, dpi=150):
     """Render each PDF page to a PNG image (as base64) using PyMuPDF."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     images = []
-    zoom = dpi / 72  # PDF default is 72 dpi
+    zoom = dpi / 72
     matrix = fitz.Matrix(zoom, zoom)
     for page in doc:
         pix = page.get_pixmap(matrix=matrix)
-        png_bytes = pix.tobytes("png")
-        images.append(base64.b64encode(png_bytes).decode("utf-8"))
+        images.append(base64.b64encode(pix.tobytes("png")).decode("utf-8"))
     doc.close()
     return images
 
 
 def extract_notices_from_page(image_b64):
     """Send one page image to Claude and get back structured notices."""
-    response = client.messages.create(
-        model="claude-sonnet-5",
-        max_tokens=1024,
-        messages=[
-            {
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-5",
+            max_tokens=1024,
+            messages=[{
                 "role": "user",
                 "content": [
                     {
                         "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/png",
-                            "data": image_b64,
-                        },
+                        "source": {"type": "base64", "media_type": "image/png", "data": image_b64},
                     },
                     {"type": "text", "text": EXTRACTION_PROMPT},
                 ],
-            }
-        ],
-    )
-
-    text = "".join(block.text for block in response.content if block.type == "text")
-    text = text.strip()
-    # Strip markdown code fences if Claude adds them despite instructions
-    text = re.sub(r"^```json\s*|\s*```$", "", text.strip())
-
-    try:
+            }],
+        )
+        text = "".join(b.text for b in response.content if b.type == "text").strip()
+        text = re.sub(r"^```json\s*|\s*```$", "", text)
         return json.loads(text)
-    except json.JSONDecodeError:
-        print(f"Could not parse JSON from response, skipping page. Raw: {text[:200]}")
+    except Exception as e:
+        print("Cayman page extraction error: " + str(e))
         return []
 
 
-def scrape_cayman_gazette():
-    print("Finding latest Cayman Islands Gazette PDF...")
-    pdf_url = find_latest_gazette_pdf()
-    if not pdf_url:
-        print("Could not find a Gazette PDF link on the page.")
-        return []
-
-    print(f"Found: {pdf_url}")
-    pdf_bytes = download_pdf(pdf_url)
-
-    print("Rendering pages to images...")
-    page_images = pdf_to_page_images(pdf_bytes)
-    print(f"{len(page_images)} pages to check.")
-
-    all_notices = []
-    for i, image_b64 in enumerate(page_images):
-        print(f"Checking page {i + 1}/{len(page_images)}...")
-        notices = extract_notices_from_page(image_b64)
-        for notice in notices:
-            notice["source_url"] = pdf_url
-            notice["jurisdiction"] = "KY"  # Cayman Islands
-            notice["page"] = i + 1
-        all_notices.extend(notices)
-
-    print(f"Found {len(all_notices)} relevant notices total.")
-    return all_notices
+def make_notice_id(notice):
+    """Deterministic ID so re-running the same gazette issue doesn't create duplicates."""
+    raw = f"{notice.get('company_name','')}-{notice.get('notice_type','')}-{notice.get('date','')}"
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", raw).strip("-").upper()
+    return ("KY-" + slug)[:250]
 
 
-# ---------------------------------------------------------------------------
-# NOTE: this saves results to a local JSON file so you can inspect them first.
-# To wire this into your existing database, replace save_to_json() below with
-# the same sqlite3 insert logic your ireland_scraper.py already uses — just
-# match the column names in your `notices` table (or whatever it's called).
-# Ask your Claude Code session to do this integration step for you.
-# ---------------------------------------------------------------------------
+def refresh_cayman():
+    """Fetch the latest Cayman gazette, extract notices via Claude vision,
+    insert new ones into the insolvencies table. Returns count of new rows,
+    matching the pattern of refresh_uk() / refresh_france()."""
+    try:
+        pdf_url = find_latest_gazette_pdf()
+        if not pdf_url:
+            print("Cayman: could not find gazette PDF link")
+            return 0
 
-def save_to_json(notices, path="cayman_notices.json"):
-    with open(path, "w") as f:
-        json.dump(notices, f, indent=2)
-    print(f"Saved to {path}")
+        pdf_bytes = download_pdf(pdf_url)
+        page_images = pdf_to_page_images(pdf_bytes)
 
+        conn = get_db_connection()
+        cur = conn.cursor()
+        new = 0
 
-if __name__ == "__main__":
-    results = scrape_cayman_gazette()
-    save_to_json(results)
+        for i, image_b64 in enumerate(page_images):
+            notices = extract_notices_from_page(image_b64)
+            for n in notices:
+                company_name = (n.get("company_name") or "").strip()
+                if not company_name:
+                    continue
+                notice_type = n.get("notice_type", "Liquidation")
+                notice_date = n.get("date", "")
+                notice_id = make_notice_id(n)
+                url = pdf_url + "#page=" + str(i + 1)
+
+                try:
+                    cur.execute(
+                        "INSERT INTO insolvencies VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO NOTHING",
+                        (notice_id, company_name, notice_type, url,
+                         datetime.now().strftime("%Y-%m-%d %H:%M"),
+                         notice_date, "", "", "KY")
+                    )
+                    if cur.rowcount > 0:
+                        new += 1
+                except Exception as e:
+                    print("KY insert error: " + str(e))
+                    conn.rollback()
+
+        conn.commit()
+        conn.close()
+        return new
+
+    except Exception as e:
+        print("Cayman refresh error: " + str(e))
+        return 0
