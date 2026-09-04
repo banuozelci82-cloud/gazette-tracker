@@ -1,19 +1,32 @@
 """
-Cayman Islands Gazette scraper — uses the Claude API (vision) to read
+Cayman Islands Gazette notices — uses the Claude API (vision) to read
 liquidation/winding-up notices instead of a traditional PDF text-extraction
 library like pdfplumber, since some Gazette issues are scans without a
 real text layer.
 
-Exposes refresh_cayman(), called from app.py's /api/refresh the same way
-refresh_uk() and refresh_france() are. Writes new rows into the same
-`insolvencies` table, country code "KY".
+PRIMARY PATH: manual upload, same workflow as the Ireland CRO PDF.
+gov.ky is a generic government CMS with thousands of unrelated documents
+(credit card reports, travel expenses, bills, supplements...) mixed into
+one feed with no clean way to programmatically isolate just "Gazette" and
+"Extraordinary Gazette" issues. Rather than fight that, you browse to
+https://gov.ky/web/gazettes yourself, click into Gazettes / Extraordinary
+Gazettes, download the PDF(s) you want processed, and upload them through
+the site — same motion as the Ireland upload, just pointed at a messier
+source. app.py's /api/upload_cayman route calls process_cayman_upload()
+below.
+
+SECONDARY (best-effort, optional): refresh_cayman() tries to auto-find the
+single latest regular Gazette issue. It can fail silently and return 0 if
+gov.ky's structure shifts — that's fine, it's a bonus, not the main path.
 
 Requires ANTHROPIC_API_KEY as an environment variable (set in Railway the
-same way GMAIL_APP_PASSWORD and DATABASE_URL are set).
+same way GMAIL_APP_PASSWORD and DATABASE_URL are set) — needed for BOTH
+the manual upload and the auto-refresh, since both use Claude vision.
 """
 
 import os
 import re
+import io
 import json
 import base64
 from datetime import datetime
@@ -29,7 +42,9 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 
 client = Anthropic()  # reads ANTHROPIC_API_KEY from the environment automatically
 
-EXTRACTION_PROMPT = """You are reading one page of the Cayman Islands Government Gazette.
+EXTRACTION_PROMPT = """You are reading one page of the Cayman Islands Government Gazette
+(this may be a regular Gazette or an Extraordinary Gazette — both carry
+commercial liquidation notices).
 
 Find every notice on this page that relates to a company or partnership going
 into liquidation (voluntary OR court-ordered), winding up, receivership, or
@@ -58,58 +73,6 @@ Example:
 
 def get_db_connection():
     return psycopg2.connect(os.environ.get("DATABASE_URL"))
-
-
-def find_latest_gazette_pdf():
-    """Two-step lookup against gov.ky's real structure:
-
-    1. On the Gazettes homepage, find the most recent link whose title matches
-       a plain "<year> Gazette <number>" pattern, e.g. "2026 Gazette 18" or
-       "2026-Gazette-4". This deliberately excludes "Legislation Gazette",
-       "Extraordinary Gazette", and their supplements, which use different
-       wording and don't carry commercial liquidation notices.
-    2. That link goes to an issue detail page (e.g. gov.ky/w/2026-gazette-4),
-       which has exactly one real PDF link on it — grab that.
-
-    (The homepage itself does NOT link directly to plain .pdf URLs the way
-    it looks like it might — the earlier version of this function checked
-    href.endswith(".pdf") against the homepage and always failed, because
-    gov.ky's document URLs put the .pdf in the middle of the path, e.g.
-    /documents/35692/0/Ga042026.pdf/<hash>?t=<timestamp>, and because the
-    homepage's "latest" list often shows Legislation/Extraordinary items
-    ahead of the regular Gazette anyway.)
-    """
-    r = requests.get(GAZETTE_HOME_PAGE, headers=HEADERS, timeout=20)
-    soup = BeautifulSoup(r.text, "html.parser")
-
-    detail_url = None
-    pattern = re.compile(r"^\d{4}[\s-]+Gazette[\s-]+\d+$", re.IGNORECASE)
-    for link in soup.find_all("a", href=True):
-        text = link.get_text(strip=True)
-        if pattern.match(text):
-            href = link["href"]
-            detail_url = href if href.startswith("http") else "https://gov.ky" + href
-            break  # homepage lists newest first, so the first match wins
-
-    if not detail_url:
-        print("Cayman: could not find a Gazette issue link on the homepage")
-        return None
-
-    r2 = requests.get(detail_url, headers=HEADERS, timeout=20)
-    soup2 = BeautifulSoup(r2.text, "html.parser")
-    for link in soup2.find_all("a", href=True):
-        href = link["href"]
-        if ".pdf" in href.lower():
-            return href if href.startswith("http") else "https://gov.ky" + href
-
-    print(f"Cayman: found issue page {detail_url} but no PDF link on it")
-    return None
-
-
-def download_pdf(url):
-    r = requests.get(url, headers=HEADERS, timeout=30)
-    r.raise_for_status()
-    return r.content
 
 
 def pdf_to_page_images(pdf_bytes, dpi=150):
@@ -151,57 +114,103 @@ def extract_notices_from_page(image_b64):
 
 
 def make_notice_id(notice):
-    """Deterministic ID so re-running the same gazette issue doesn't create duplicates."""
+    """Deterministic ID so re-uploading the same gazette issue doesn't create duplicates."""
     raw = f"{notice.get('company_name','')}-{notice.get('notice_type','')}-{notice.get('date','')}"
     slug = re.sub(r"[^A-Za-z0-9]+", "-", raw).strip("-").upper()
     return ("KY-" + slug)[:250]
 
 
+def insert_notices_from_pdf(pdf_bytes, source_url):
+    """Shared logic: render pages, extract via Claude vision, insert new rows
+    into the insolvencies table. Returns (new_count, total_found)."""
+    page_images = pdf_to_page_images(pdf_bytes)
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    new = 0
+    total_found = 0
+
+    for i, image_b64 in enumerate(page_images):
+        notices = extract_notices_from_page(image_b64)
+        for n in notices:
+            company_name = (n.get("company_name") or "").strip()
+            if not company_name:
+                continue
+            total_found += 1
+            notice_type = n.get("notice_type", "Liquidation")
+            notice_date = n.get("date", "")
+            notice_id = make_notice_id(n)
+            url = source_url + ("#page=" + str(i + 1) if source_url.startswith("http") else "")
+
+            try:
+                cur.execute(
+                    "INSERT INTO insolvencies VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO NOTHING",
+                    (notice_id, company_name, notice_type, url,
+                     datetime.now().strftime("%Y-%m-%d %H:%M"),
+                     notice_date, "", "", "KY")
+                )
+                if cur.rowcount > 0:
+                    new += 1
+            except Exception as e:
+                print("KY insert error: " + str(e))
+                conn.rollback()
+
+    conn.commit()
+    conn.close()
+    return new, total_found
+
+
+def process_cayman_upload(pdf_bytes, filename="Manual upload"):
+    """Called from app.py's /api/upload_cayman route. Returns (new_count, total_found)."""
+    source_label = "Uploaded: " + filename
+    return insert_notices_from_pdf(pdf_bytes, source_label)
+
+
+# ---------------------------------------------------------------------------
+# Best-effort automatic path (optional bonus, not the main workflow — see
+# module docstring). Tries to find the single latest regular Gazette issue.
+# Safe to leave wired into /api/refresh: it catches its own errors and just
+# returns 0 if gov.ky's structure has shifted, same as the other refresh_*
+# functions in app.py.
+# ---------------------------------------------------------------------------
+
+def find_latest_gazette_pdf():
+    r = requests.get(GAZETTE_HOME_PAGE, headers=HEADERS, timeout=20)
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    detail_url = None
+    pattern = re.compile(r"^\d{4}[\s-]+Gazette[\s-]+\d+$", re.IGNORECASE)
+    for link in soup.find_all("a", href=True):
+        text = link.get_text(strip=True)
+        if pattern.match(text):
+            href = link["href"]
+            detail_url = href if href.startswith("http") else "https://gov.ky" + href
+            break
+
+    if not detail_url:
+        return None
+
+    r2 = requests.get(detail_url, headers=HEADERS, timeout=20)
+    soup2 = BeautifulSoup(r2.text, "html.parser")
+    for link in soup2.find_all("a", href=True):
+        href = link["href"]
+        if ".pdf" in href.lower():
+            return href if href.startswith("http") else "https://gov.ky" + href
+    return None
+
+
 def refresh_cayman():
-    """Fetch the latest Cayman gazette, extract notices via Claude vision,
-    insert new ones into the insolvencies table. Returns count of new rows,
-    matching the pattern of refresh_uk() / refresh_france()."""
+    """Best-effort auto-refresh. Returns 0 (not an error) if it can't find
+    anything — the manual upload path is the reliable one."""
     try:
         pdf_url = find_latest_gazette_pdf()
         if not pdf_url:
-            print("Cayman: could not find gazette PDF link")
+            print("Cayman auto-refresh: no issue found (use manual upload instead)")
             return 0
-
-        pdf_bytes = download_pdf(pdf_url)
-        page_images = pdf_to_page_images(pdf_bytes)
-
-        conn = get_db_connection()
-        cur = conn.cursor()
-        new = 0
-
-        for i, image_b64 in enumerate(page_images):
-            notices = extract_notices_from_page(image_b64)
-            for n in notices:
-                company_name = (n.get("company_name") or "").strip()
-                if not company_name:
-                    continue
-                notice_type = n.get("notice_type", "Liquidation")
-                notice_date = n.get("date", "")
-                notice_id = make_notice_id(n)
-                url = pdf_url + "#page=" + str(i + 1)
-
-                try:
-                    cur.execute(
-                        "INSERT INTO insolvencies VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO NOTHING",
-                        (notice_id, company_name, notice_type, url,
-                         datetime.now().strftime("%Y-%m-%d %H:%M"),
-                         notice_date, "", "", "KY")
-                    )
-                    if cur.rowcount > 0:
-                        new += 1
-                except Exception as e:
-                    print("KY insert error: " + str(e))
-                    conn.rollback()
-
-        conn.commit()
-        conn.close()
+        r = requests.get(pdf_url, headers=HEADERS, timeout=30)
+        r.raise_for_status()
+        new, _ = insert_notices_from_pdf(r.content, pdf_url)
         return new
-
     except Exception as e:
         print("Cayman refresh error: " + str(e))
         return 0
