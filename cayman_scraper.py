@@ -30,6 +30,7 @@ import io
 import json
 import base64
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 import fitz  # PyMuPDF
@@ -106,6 +107,7 @@ def extract_notices_from_page(image_b64):
             }],
         )
         text = "".join(b.text for b in response.content if b.type == "text").strip()
+        print("Cayman page raw response: " + text[:300])
         text = re.sub(r"^```json\s*|\s*```$", "", text)
         return json.loads(text)
     except Exception as e:
@@ -121,17 +123,36 @@ def make_notice_id(notice):
 
 
 def insert_notices_from_pdf(pdf_bytes, source_url):
-    """Shared logic: render pages, extract via Claude vision, insert new rows
-    into the insolvencies table. Returns (new_count, total_found)."""
+    """Shared logic: render pages, extract via Claude vision (in parallel,
+    a handful of pages at a time), insert new rows into the insolvencies
+    table. Returns (new_count, total_found)."""
     page_images = pdf_to_page_images(pdf_bytes)
+
+    # Process pages concurrently instead of one-by-one — for a 30-page issue,
+    # doing them sequentially can take 2-3 minutes and gets killed by
+    # gunicorn's request timeout. Running a handful at once keeps it well
+    # under a minute in most cases.
+    results_by_page = {}
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_page = {
+            executor.submit(extract_notices_from_page, img): i
+            for i, img in enumerate(page_images)
+        }
+        for future in as_completed(future_to_page):
+            page_num = future_to_page[future]
+            try:
+                results_by_page[page_num] = future.result()
+            except Exception as e:
+                print(f"Cayman page {page_num + 1} failed: {e}")
+                results_by_page[page_num] = []
 
     conn = get_db_connection()
     cur = conn.cursor()
     new = 0
     total_found = 0
 
-    for i, image_b64 in enumerate(page_images):
-        notices = extract_notices_from_page(image_b64)
+    for i in range(len(page_images)):
+        notices = results_by_page.get(i, [])
         for n in notices:
             company_name = (n.get("company_name") or "").strip()
             if not company_name:
