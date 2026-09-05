@@ -154,7 +154,10 @@ def upload_cayman():
         new, total_found = process_cayman_upload(pdf_bytes, f.filename)
         return jsonify({"status": "ok", "new": new, "total_found": total_found})
     except Exception as e:
-        return jsonify({"error": str(e)})
+        import traceback
+        tb = traceback.format_exc()
+        print("Cayman upload error:\n" + tb)
+        return jsonify({"error": type(e).__name__ + ": " + str(e) if str(e) else type(e).__name__})
 
 def parse_ireland_pdf(pdf_bytes):
     notices = []
