@@ -3,7 +3,7 @@ import requests, csv, io, os, openpyxl, re, pdfplumber, json
 from datetime import datetime, timedelta
 from collections import Counter
 import psycopg2
-from cayman_scraper import refresh_cayman, process_cayman_upload
+from cayman_scraper import process_cayman_upload
 
 app = Flask(__name__)
 BASE_URL = "https://www.thegazette.co.uk"
@@ -87,7 +87,10 @@ def refresh():
     new_us_public = refresh_us_public()
     new_us_nonpublic = refresh_us_nonpublic()
     new_fr = refresh_france()
-    new_ky = refresh_cayman()
+    # Cayman is manual-upload only (see cayman_scraper.py) — auto-refresh
+    # isn't called here because it can trigger a full, slow page-by-page
+    # extraction job unexpectedly inside what's meant to be a quick refresh.
+    new_ky = 0
     total_us = new_us_public + new_us_nonpublic
     return jsonify({"status": "ok", "new_uk": new_uk, "new_us": total_us, "new_fr": new_fr, "new_ky": new_ky})
 
