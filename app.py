@@ -42,6 +42,32 @@ HEADERS = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
 def clean_name(name):
     return name.replace("&apos;", "'").replace("&amp;", "&").replace("&quot;", '"').replace("&#39;", "'")
 
+def get_company_number_uk(company_name):
+    try:
+        api_key = os.environ.get("COMPANIES_HOUSE_API_KEY", "")
+        if not api_key:
+            return ""
+        r = requests.get(
+            "https://api.company-information.service.gov.uk/search/companies",
+            params={"q": company_name, "items_per_page": 1},
+            auth=(api_key, ""),
+            timeout=5
+        )
+        items = r.json().get("items", [])
+        if items:
+            return items[0].get("company_number", "")
+    except:
+        pass
+    return ""
+
+def extract_cik_from_url(url):
+    try:
+        if "CIK=" in url:
+            return url.split("CIK=")[1].split("&")[0]
+    except:
+        pass
+    return ""
+
 def get_db():
     conn = psycopg2.connect(os.environ.get("DATABASE_URL"))
     cur = conn.cursor()
@@ -216,14 +242,22 @@ def refresh_uk():
                 if n.get("f:notice-code") in CODES:
                     nid = n.get("id", "").split("/")[-1]
                     company_name = clean_name(n.get("title", "N/A"))
+                    # Check if already exists with company number
+                    cur.execute("SELECT company_number FROM insolvencies WHERE id = %s", (nid,))
+                    existing = cur.fetchone()
+                    company_number = ""
+                    if existing:
+                        company_number = existing[0] or ""
+                    if not company_number:
+                        company_number = get_company_number_uk(company_name)
                     try:
                         cur.execute(
-                            "INSERT INTO insolvencies VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO UPDATE SET notice_date = EXCLUDED.notice_date, date_fetched = EXCLUDED.date_fetched",
+                            "INSERT INTO insolvencies VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO UPDATE SET notice_date = EXCLUDED.notice_date, date_fetched = EXCLUDED.date_fetched, company_number = EXCLUDED.company_number",
                             (nid, company_name, n.get("f:notice-code", ""),
                              BASE_URL + "/notice/" + nid,
                              datetime.now().strftime("%Y-%m-%d %H:%M"),
                              nd_str[:10] if nd_str else "",
-                             "", "", "UK")
+                             company_number, "", "UK")
                         )
                         if cur.rowcount > 0:
                             new += 1
@@ -341,7 +375,7 @@ def refresh_us_public():
                     (notice_id, company_name, "Chapter 11",
                      filing_url,
                      datetime.now().strftime("%Y-%m-%d %H:%M"),
-                     file_date, "", "", "US")
+                     file_date, cik, "", "US")
                 )
                 if cur.rowcount > 0:
                     new += 1
