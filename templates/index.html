@@ -43,8 +43,6 @@
   .flag-uk { background: #003082; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
   .flag-us { background: #b22234; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
   .flag-ie { background: #169b62; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
-  .flag-fr { background: #002395; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
-  .flag-ky { background: #00327f; color: white; padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
   #chart-container { background: white; border-radius: 8px; padding: 2rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); max-width: 700px; }
   .bar-wrap { margin: 8px 0; }
   .bar-label { font-size: 13px; margin-bottom: 4px; display: flex; justify-content: space-between; }
@@ -66,7 +64,6 @@
     <option value="US">US</option>
     <option value="IE">Ireland</option>
     <option value="FR">France</option>
-    <option value="KY">Cayman Islands</option>
   </select>
   <select id="type-filter" onchange="filterTable()">
     <option value="">All Types</option>
@@ -77,24 +74,19 @@
     <option>Receivership</option>
     <option>Winding Up</option>
     <option>Chapter 11</option>
-    <option>Chapter 7</option>
     <option>Examinership</option>
     <option>Voluntary Winding Up</option>
     <option>Winding Up Order</option>
   </select>
-  <button class="btn-primary" onclick="doRefresh()" style="padding:8px 16px; border:none; border-radius:6px; font-size:14px; cursor:pointer; color:white;">Refresh All</button>
+  <button class="btn-primary" onclick="doRefresh()" style="padding:8px 16px; border:none; border-radius:6px; font-size:14px; cursor:pointer; color:white;">Refresh UK & US</button>
   <a class="btn-success" href="/export/excel" style="padding:8px 16px; border-radius:6px; font-size:14px; color:white; text-decoration:none;">Export Excel</a>
   <a class="btn-info" href="/export/csv" style="padding:8px 16px; border-radius:6px; font-size:14px; color:white; text-decoration:none;">Export CSV</a>
   <span id="status" style="font-size:13px; color:#666; margin-left:8px;"></span>
 </div>
 <div class="ireland-bar">
-  <label>Upload weekly PDF (Ireland every Tuesday, Cayman every 2 weeks):</label>
-  <select id="pdf-country" style="width:130px;">
-    <option value="IE">Ireland</option>
-    <option value="KY">Cayman</option>
-  </select>
+  <label>Ireland (CRO) — Upload weekly PDF every Tuesday:</label>
   <input type="file" id="ireland-file" accept=".pdf">
-  <button class="btn-ireland" onclick="uploadPDF()" style="padding:8px 16px; border:none; border-radius:6px; font-size:14px; cursor:pointer; color:white;">Upload PDF</button>
+  <button class="btn-ireland" onclick="uploadIreland()" style="padding:8px 16px; border:none; border-radius:6px; font-size:14px; cursor:pointer; color:white;">Upload Ireland PDF</button>
   <span id="ireland-status" style="font-size:13px; color:#2e7d32;"></span>
 </div>
 <div class="tabs">
@@ -118,7 +110,7 @@
 var allData = [];
 
 function badgeClass(type) {
-  if (type === 'Chapter 11' || type === 'Chapter 7') return 'badge-ch11';
+  if (type === 'Chapter 11') return 'badge-ch11';
   if (type.indexOf('Admin') >= 0) return 'badge-admin';
   if (type.indexOf('Compulsory') >= 0) return 'badge-liq';
   if (type.indexOf('Winding') >= 0) return 'badge-wind';
@@ -130,8 +122,6 @@ function badgeClass(type) {
 function flagClass(country) {
   if (country === 'US') return 'flag-us';
   if (country === 'IE') return 'flag-ie';
-  if (country === 'FR') return 'flag-fr';
-  if (country === 'KY') return 'flag-ky';
   return 'flag-uk';
 }
 
@@ -154,6 +144,7 @@ function renderTable(data) {
       if (r.country === 'UK') regUrl = 'https://find-and-update.company-information.service.gov.uk/company/' + r.company_number;
       else if (r.country === 'IE') regUrl = 'https://www.cro.ie/Registration/Company/Details/' + r.company_number;
       else if (r.country === 'FR') regUrl = 'https://www.societe.com/societe/' + r.company_number + '.html';
+      else if (r.country === 'US') regUrl = 'https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=' + r.company_number + '&type=&dateb=&owner=include&count=10';
       if (regUrl) regLink = '<a href="' + regUrl + '" target="_blank" style="font-size:11px;color:#666;">' + r.company_number + '</a>';
       else regLink = '<span style="font-size:11px;color:#666;">' + r.company_number + '</span>';
     }
@@ -185,7 +176,7 @@ function doRefresh() {
   document.getElementById('status').textContent = 'Fetching...';
   fetch('/api/refresh').then(function(r) { return r.json(); }).then(function(d) {
     if (d.status === 'ok') {
-      document.getElementById('status').textContent = d.new_uk + ' new UK, ' + (d.new_us || 0) + ' new US, ' + (d.new_fr || 0) + ' new FR notices.';
+      document.getElementById('status').textContent = d.new_uk + ' new UK, ' + d.new_us + ' new US notices.';
     } else {
       document.getElementById('status').textContent = 'Error: ' + d.message;
     }
@@ -194,22 +185,20 @@ function doRefresh() {
   });
 }
 
-function uploadPDF() {
+function uploadIreland() {
   var fileInput = document.getElementById('ireland-file');
-  var country = document.getElementById('pdf-country').value;
   if (!fileInput.files.length) {
-    alert('Please select a PDF file first');
+    alert('Please select the CRO PDF file first');
     return;
   }
   var formData = new FormData();
   formData.append('file', fileInput.files[0]);
-  formData.append('country', country);
   document.getElementById('ireland-status').textContent = 'Uploading and processing...';
-  fetch('/api/upload_pdf', {method: 'POST', body: formData})
+  fetch('/api/upload_ireland', {method: 'POST', body: formData})
     .then(function(r) { return r.json(); })
     .then(function(d) {
       if (d.status === 'ok') {
-        document.getElementById('ireland-status').textContent = d.new + ' new notices added (' + d.total_found + ' found in PDF)';
+        document.getElementById('ireland-status').textContent = d.new + ' new Irish notices added (' + d.total_found + ' found in PDF)';
         loadNotices();
         loadChart();
       } else {
