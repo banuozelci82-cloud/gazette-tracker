@@ -3,7 +3,6 @@ import requests, csv, io, os, openpyxl, re, pdfplumber, json
 from datetime import datetime, timedelta
 from collections import Counter
 import psycopg2
-from cayman_scraper import process_cayman_upload
 
 app = Flask(__name__)
 BASE_URL = "https://www.thegazette.co.uk"
@@ -68,7 +67,7 @@ def index():
 def notices():
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector, country FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC")
+    cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector, country, company_number FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC")
     rows = cur.fetchall()
     conn.close()
     all_codes = {**CODES, **IRELAND_CODES}
@@ -78,7 +77,8 @@ def notices():
         "date": r[4] or r[2],
         "url": r[3],
         "sector": r[5] or "",
-        "country": r[6] or "UK"
+        "country": r[6] or "UK",
+        "company_number": r[7] or ""
     } for r in rows])
 
 @app.route("/api/refresh")
@@ -87,12 +87,8 @@ def refresh():
     new_us_public = refresh_us_public()
     new_us_nonpublic = refresh_us_nonpublic()
     new_fr = refresh_france()
-    # Cayman is manual-upload only (see cayman_scraper.py) — auto-refresh
-    # isn't called here because it can trigger a full, slow page-by-page
-    # extraction job unexpectedly inside what's meant to be a quick refresh.
-    new_ky = 0
     total_us = new_us_public + new_us_nonpublic
-    return jsonify({"status": "ok", "new_uk": new_uk, "new_us": total_us, "new_fr": new_fr, "new_ky": new_ky})
+    return jsonify({"status": "ok", "new_uk": new_uk, "new_us": total_us, "new_fr": new_fr})
 
 @app.route("/api/debug_fr")
 def debug_fr():
@@ -141,23 +137,6 @@ def upload_ireland():
         return jsonify({"status": "ok", "new": new, "total_found": len(notices)})
     except Exception as e:
         return jsonify({"error": str(e)})
-
-@app.route("/api/upload_cayman", methods=["POST"])
-def upload_cayman():
-    if "file" not in request.files:
-        return jsonify({"error": "No file uploaded"})
-    f = request.files["file"]
-    if not f.filename.endswith(".pdf"):
-        return jsonify({"error": "Please upload a PDF file"})
-    try:
-        pdf_bytes = f.read()
-        new, total_found = process_cayman_upload(pdf_bytes, f.filename)
-        return jsonify({"status": "ok", "new": new, "total_found": total_found})
-    except Exception as e:
-        import traceback
-        tb = traceback.format_exc()
-        print("Cayman upload error:\n" + tb)
-        return jsonify({"error": type(e).__name__ + ": " + str(e) if str(e) else type(e).__name__})
 
 def parse_ireland_pdf(pdf_bytes):
     notices = []
@@ -296,6 +275,7 @@ def refresh_france():
                 notice_id = "FR-" + item.get("id", "")
                 date_str = item.get("dateparution", "")
                 notice_date = date_str if date_str else ""
+                # skip if date is too old
                 if notice_date and len(notice_date) == 10 and notice_date < cutoff_str:
                     continue
                 jugement = item.get("jugement", "{}")
@@ -436,7 +416,7 @@ def chart():
 def export_csv():
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector, country FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC")
+    cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector, country, company_number FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC")
     rows = cur.fetchall()
     conn.close()
     all_codes = {**CODES, **IRELAND_CODES}
@@ -452,7 +432,7 @@ def export_csv():
 def export_excel():
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector, country FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC")
+    cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector, country, company_number FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC")
     rows = cur.fetchall()
     conn.close()
     all_codes = {**CODES, **IRELAND_CODES}
@@ -468,26 +448,6 @@ def export_excel():
     wb.save(output)
     output.seek(0)
     return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="insolvencies.xlsx")
-
-@app.route("/api/clear_fr")
-def clear_fr():
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM insolvencies WHERE country = 'FR'")
-    conn.commit()
-    deleted = cur.rowcount
-    conn.close()
-    return jsonify({"deleted": deleted})
-
-@app.route("/api/clear_ky")
-def clear_ky():
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM insolvencies WHERE country = 'KY'")
-    conn.commit()
-    deleted = cur.rowcount
-    conn.close()
-    return jsonify({"deleted": deleted})
 
 if __name__ == "__main__":
     app.run(debug=True)
