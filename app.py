@@ -107,30 +107,37 @@ def debug_fr():
 
 @app.route("/api/upload_ireland", methods=["POST"])
 def upload_ireland():
+    return upload_pdf()
+
+@app.route("/api/upload_pdf", methods=["POST"])
+def upload_pdf():
     if "file" not in request.files:
         return jsonify({"error": "No file uploaded"})
     f = request.files["file"]
     if not f.filename.endswith(".pdf"):
         return jsonify({"error": "Please upload a PDF file"})
+    country = request.form.get("country", "IE")
     try:
         pdf_bytes = f.read()
         notices = parse_ireland_pdf(pdf_bytes)
         conn = get_db()
         cur = conn.cursor()
         new = 0
+        url = "https://cro.ie/cro-gazette-publications/" if country == "IE" else "https://www.egazettes.gov.ky/"
         for n in notices:
             try:
+                notice_id = n["id"].replace("IE-", country + "-")
                 cur.execute(
                     "INSERT INTO insolvencies VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (id) DO NOTHING",
-                    (n["id"], n["company_name"], n["notice_code"],
-                     "https://cro.ie/cro-gazette-publications/",
+                    (notice_id, n["company_name"], n["notice_code"],
+                     url,
                      datetime.now().strftime("%Y-%m-%d %H:%M"),
-                     n["notice_date"], n["company_number"], "", "IE")
+                     n["notice_date"], n["company_number"], "", country)
                 )
                 if cur.rowcount > 0:
                     new += 1
             except Exception as e:
-                print("IE insert error: " + str(e))
+                print(country + " insert error: " + str(e))
                 conn.rollback()
         conn.commit()
         conn.close()
