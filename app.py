@@ -93,7 +93,7 @@ def index():
 def notices():
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector, country, company_number FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC")
+    cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector, country, company_number FROM insolvencies ORDER BY date_fetched DESC, notice_date DESC")
     rows = cur.fetchall()
     conn.close()
     all_codes = {**CODES, **IRELAND_CODES}
@@ -215,6 +215,36 @@ def clear_us():
     conn = get_db()
     cur = conn.cursor()
     cur.execute("DELETE FROM insolvencies WHERE country = 'US'")
+    conn.commit()
+    deleted = cur.rowcount
+    conn.close()
+    return jsonify({"deleted": deleted})
+
+@app.route("/api/clear_fr")
+def clear_fr():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM insolvencies WHERE country = 'FR'")
+    conn.commit()
+    deleted = cur.rowcount
+    conn.close()
+    return jsonify({"deleted": deleted})
+
+@app.route("/api/clear_ky")
+def clear_ky():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM insolvencies WHERE country = 'KY'")
+    conn.commit()
+    deleted = cur.rowcount
+    conn.close()
+    return jsonify({"deleted": deleted})
+
+@app.route("/api/clear_ie")
+def clear_ie():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM insolvencies WHERE country = 'IE'")
     conn.commit()
     deleted = cur.rowcount
     conn.close()
@@ -457,7 +487,7 @@ def chart():
 def export_csv():
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector, country, company_number FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC")
+    cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector, country, company_number FROM insolvencies ORDER BY date_fetched DESC, notice_date DESC")
     rows = cur.fetchall()
     conn.close()
     all_codes = {**CODES, **IRELAND_CODES}
@@ -473,7 +503,7 @@ def export_csv():
 def export_excel():
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector, country, company_number FROM insolvencies ORDER BY notice_date DESC, date_fetched DESC")
+    cur.execute("SELECT company_name, notice_code, date_fetched, url, notice_date, sector, country, company_number FROM insolvencies ORDER BY date_fetched DESC, notice_date DESC")
     rows = cur.fetchall()
     conn.close()
     all_codes = {**CODES, **IRELAND_CODES}
